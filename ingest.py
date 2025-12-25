@@ -5,7 +5,7 @@ import pickle
 
 # 1. SETUP API
 # Paste your actual key here!
-API_KEY = "AIzaSyBcQl1avm4MPpIMwW74EYFkuzlaaE8fsJ0"
+API_KEY = "KEY_REMOVED_FOR_SECURITY"
 genai.configure(api_key=API_KEY)
 
 # 2. LOAD DATA
@@ -34,5 +34,6 @@ for doc in documents:
 # We save the text and the math vectors together
 with open("manual_memory.pkl", "wb") as f:
     pickle.dump({"docs": documents, "vectors": embeddings}, f)
+
 
 print("✅ Success! Memory created in 'manual_memory.pkl'")

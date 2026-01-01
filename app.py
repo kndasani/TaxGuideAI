@@ -113,4 +113,95 @@ You are "TaxGuide AI", an expert and empathetic Indian Tax Consultant.
 # --- 6. HEADER & DISCLAIMER ---
 col1, col2 = st.columns([5, 1])
 with col1:
-    st.markdown("###
+    st.markdown("### 🇮🇳 TaxGuide AI")
+with col2:
+    if st.button("🔄", help="Reset Chat"):
+        st.session_state.chat_session = None
+        st.rerun()
+
+st.warning("⚠️ **Disclaimer:** I am an AI Assistant. Tax laws are complex. Please verify these figures with a Chartered Accountant (CA) before filing.", icon="⚠️")
+st.divider()
+
+# --- 7. CHAT LOGIC ---
+if "chat_session" not in st.session_state:
+    history = []
+    if pdf_library:
+        history.append({"role": "user", "parts": pdf_library + ["Here is your tax library."]})
+        history.append({"role": "model", "parts": ["I have studied the library."]})
+    
+    model = genai.GenerativeModel('gemini-2.0-flash', system_instruction=sys_instruction)
+    st.session_state.chat_session = model.start_chat(history=history)
+
+# --- 8. WELCOME HINTS (RESTORED) ---
+# Check if history is empty (ignoring hidden system messages)
+if len(st.session_state.chat_session.history) <= 2:
+    st.markdown("#### 👋 Hello! I can help you save tax.")
+    st.markdown("I don't need forms. Just talk to me like a human!")
+    
+    st.info("👇 **Try saying:**\n"
+            "- *\"I work at a tech company and earn 18 Lakhs.\"*\n"
+            "- *\"I am a freelance designer with 30 Lakhs income.\"*\n"
+            "- *\"I have a salary plus some stock market profit.\"*")
+
+# --- 9. DISPLAY CHAT ---
+start_idx = 2 if pdf_library else 0
+for msg in st.session_state.chat_session.history[start_idx:]:
+    role = "user" if msg.role == "user" else "assistant"
+    avatar = "👤" if role == "user" else "🤖"
+    
+    with st.chat_message(role, avatar=avatar):
+        st.markdown(msg.parts[0].text)
+
+# --- 10. INPUT HANDLING ---
+if prompt := st.chat_input("Type your answer..."):
+    st.chat_message("user", avatar="👤").markdown(prompt)
+    
+    with st.spinner("Analyzing..."):
+        try:
+            response = st.session_state.chat_session.send_message(prompt)
+            text = response.text
+            
+            if "CALCULATE(" in text:
+                try:
+                    params = text.split("CALCULATE(")[1].split(")")[0]
+                    data = {"age":30, "salary":0, "business":0, "rent":0, "inv80c":0, "med80d":0}
+                    
+                    for part in params.split(","):
+                        if "=" in part:
+                            key, val = part.split("=")
+                            val_clean = ''.join(filter(str.isdigit, val.strip()))
+                            if val_clean:
+                                data[key.strip()] = int(val_clean)
+                    
+                    tn, to = calculate_tax_logic(
+                        data['age'], data['salary'], data['business'], 
+                        data['rent'], data['inv80c'], data['med80d']
+                    )
+                    
+                    savings = abs(tn - to)
+                    winner = "New Regime" if tn < to else "Old Regime"
+                    
+                    st.chat_message("assistant", avatar="🤖").markdown(f"""
+                    ### 🧾 Your Tax Report
+                    
+                    | Regime | Tax Payable |
+                    | :--- | :--- |
+                    | **New Regime** | **₹{tn:,}** |
+                    | **Old Regime** | **₹{to:,}** |
+                    
+                    🏆 **Recommendation:** Choose **{winner}**.
+                    You save **₹{savings:,}**!
+                    """)
+                    
+                    st.session_state.chat_session.history.append({
+                        "role": "model",
+                        "parts": [f"Result shown: New={tn}, Old={to}"]
+                    })
+
+                except Exception as e:
+                    st.error(f"Calculation Error: {e}")
+            else:
+                st.chat_message("assistant", avatar="🤖").markdown(text)
+                
+        except Exception as e:
+            st.error(f"Error: {e}")

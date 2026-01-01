@@ -25,37 +25,32 @@ if not api_key:
 
 genai.configure(api_key=api_key)
 
-# --- 3. HELPER: SMART RETRY (Fixes 429 Errors) ---
-def send_message_with_retry(chat_session, prompt, retries=3):
+# --- 3. HELPER: STREAMING RETRY (Fixes Slowness) ---
+def get_response_stream(chat_session, prompt, retries=3):
     """
-    If Google sends a 429 (Busy) error, this function waits 
-    and retries automatically instead of crashing.
+    Tries to get a streaming response. If 429 (Busy), waits and retries.
     """
     for i in range(retries):
         try:
-            return chat_session.send_message(prompt)
+            # stream=True makes it start typing immediately
+            return chat_session.send_message(prompt, stream=True)
         except Exception as e:
             if "429" in str(e):
-                wait_time = (2 ** i) + 2  # Wait 3s, 4s, 6s...
-                time.sleep(wait_time)
+                time.sleep(2**i + 2) # Exponential backoff
                 continue
             else:
                 raise e
-    raise Exception("⚠️ Server is very busy. Please wait a minute and try again.")
+    raise Exception("⚠️ Server is very busy. Please try again.")
 
-# --- 4. THE CALCULATOR ENGINE ---
+# --- 4. CALCULATOR ENGINE ---
 def calculate_tax_logic(age, salary, business_income, rent_paid, inv_80c, med_80d):
     std_deduction_new = 75000 
     std_deduction_old = 50000
     
-    # Business Income (50% Presumptive)
     taxable_business = business_income * 0.50
-    
-    # Salary Income
     basic = salary * 0.50
     hra = max(0, rent_paid * 12 - (0.10 * basic))
     
-    # Net Taxable Income
     gross_old = (salary - std_deduction_old - hra) + taxable_business
     taxable_old = max(0, gross_old - min(inv_80c, 150000) - med_80d)
     taxable_new = max(0, (salary - std_deduction_new) + taxable_business)
@@ -103,28 +98,18 @@ pdf_library = load_knowledge()
 
 # --- 6. THE CONSULTANT BRAIN ---
 sys_instruction = """
-You are "TaxGuide AI", an expert and empathetic Indian Tax Consultant.
-**Your Goal:** Guide the user to the best tax regime by discovering their details conversationally.
+You are "TaxGuide AI", an expert Indian Tax Consultant.
+**Goal:** Guide the user conversationally. 
 
-**PHASE 1: PERSONA DISCOVERY**
-- Start by introducing yourself as TaxGuide AI.
-- Ask: "To help you save the most tax, I need to understand how you earn. Do you earn a Salary, are you a Freelancer/Business owner, or both?"
-- **Do NOT** ask for numbers yet. Just understand the source.
+**PHASE 1: DISCOVERY**
+- Ask: "To start, do you earn a Salary, are you a Freelancer, or both?"
 
-**PHASE 2: SLAB CLARIFICATION**
-- Ask for their **AGE** (Critical for Senior Citizen slabs).
-- Ask for their **Total Annual Income**.
-- Explain *why* you are asking.
+**PHASE 2: DETAILS**
+- Ask for Age, Income, Rent, Investments (80C/80D).
+- Ask GUIDING questions (e.g., "Do you pay rent?", "Do you have Life Insurance?").
 
-**PHASE 3: DEDUCTION HUNTING (The Guide)**
-- **Do NOT** ask "What is your 80C?".
-- Instead, ask **GUIDING QUESTIONS** like:
-  - "Do you live in a rented house?" (for HRA)
-  - "Do you have investments like PF, PPF, or Life Insurance?" (for 80C).
-  - "Do you pay for medical insurance?" (for 80D).
-
-**PHASE 4: EXECUTION**
-- Only when you have all numbers, output strictly:
+**PHASE 3: CALCULATION**
+- Only when you have all data, output strictly:
   `CALCULATE(age=..., salary=..., business=..., rent=..., inv80c=..., med80d=...)`
 """
 
@@ -137,7 +122,7 @@ with col2:
         st.session_state.chat_session = None
         st.rerun()
 
-st.warning("⚠️ **Disclaimer:** I am an AI Assistant. Tax laws are complex. Please verify these figures with a Chartered Accountant (CA) before filing.", icon="⚠️")
+st.warning("⚠️ **Disclaimer:** I am an AI Assistant. Verify figures with a CA.", icon="⚠️")
 st.divider()
 
 # --- 8. CHAT LOGIC ---
@@ -153,35 +138,52 @@ if "chat_session" not in st.session_state:
 # --- 9. WELCOME HINTS ---
 if len(st.session_state.chat_session.history) <= 2:
     st.markdown("#### 👋 Hello! I can help you save tax.")
-    st.markdown("I don't need forms. Just talk to me like a human!")
-    
-    st.info("👇 **Try saying:**\n"
-            "- *\"I work at a tech company and earn 18 Lakhs.\"*\n"
-            "- *\"I am a freelance designer with 30 Lakhs income.\"*\n"
-            "- *\"I have a salary plus some stock market profit.\"*")
+    st.info("👇 **Try saying:** *\"I earn 18 Lakhs salary\"* or *\"I am a freelancer\"*")
 
-# --- 10. DISPLAY CHAT ---
+# --- 10. DISPLAY HISTORY ---
 start_idx = 2 if pdf_library else 0
 for msg in st.session_state.chat_session.history[start_idx:]:
     role = "user" if msg.role == "user" else "assistant"
     avatar = "👤" if role == "user" else "🤖"
     
-    with st.chat_message(role, avatar=avatar):
-        st.markdown(msg.parts[0].text)
+    # We don't want to show the raw "CALCULATE" code in history if it exists
+    # But usually, the "Result Card" is what we want to show. 
+    # For simplicity in history, we show text.
+    if "Result shown:" not in msg.parts[0].text: 
+        with st.chat_message(role, avatar=avatar):
+            st.markdown(msg.parts[0].text)
 
-# --- 11. INPUT HANDLING ---
-if prompt := st.chat_input("Type your answer..."):
+# --- 11. STREAMING INPUT HANDLING ---
+if prompt := st.chat_input("Type here..."):
     st.chat_message("user", avatar="👤").markdown(prompt)
     
-    with st.spinner("Analyzing..."):
+    # Placeholder for the AI response
+    with st.chat_message("assistant", avatar="🤖"):
+        placeholder = st.empty()
+        full_text = ""
+        
         try:
-            # --- UPDATED: USE THE RETRY FUNCTION ---
-            response = send_message_with_retry(st.session_state.chat_session, prompt)
-            text = response.text
+            # Get the stream
+            stream = get_response_stream(st.session_state.chat_session, prompt)
             
-            if "CALCULATE(" in text:
+            # Type out response chunk by chunk
+            for chunk in stream:
+                if chunk.text:
+                    full_text += chunk.text
+                    # Check if it's the hidden trigger code
+                    if "CALCULATE(" in full_text:
+                        placeholder.markdown("🧮 *Crunching the numbers...*")
+                    else:
+                        placeholder.markdown(full_text + "▌") # Cursor effect
+            
+            # Final render (remove cursor)
+            if "CALCULATE(" not in full_text:
+                placeholder.markdown(full_text)
+            
+            # --- TRIGGER LOGIC ---
+            if "CALCULATE(" in full_text:
                 try:
-                    params = text.split("CALCULATE(")[1].split(")")[0]
+                    params = full_text.split("CALCULATE(")[1].split(")")[0]
                     data = {"age":30, "salary":0, "business":0, "rent":0, "inv80c":0, "med80d":0}
                     
                     for part in params.split(","):
@@ -199,7 +201,8 @@ if prompt := st.chat_input("Type your answer..."):
                     savings = abs(tn - to)
                     winner = "New Regime" if tn < to else "Old Regime"
                     
-                    st.chat_message("assistant", avatar="🤖").markdown(f"""
+                    # REPLACE the "Crunching numbers" text with the table
+                    placeholder.markdown(f"""
                     ### 🧾 Your Tax Report
                     
                     | Regime | Tax Payable |
@@ -211,15 +214,12 @@ if prompt := st.chat_input("Type your answer..."):
                     You save **₹{savings:,}**!
                     """)
                     
-                    st.session_state.chat_session.history.append({
-                        "role": "model",
-                        "parts": [f"Result shown: New={tn}, Old={to}"]
-                    })
+                    # Save a clean log to history (so the AI remembers we showed the result)
+                    # We modify the last history item to avoid saving the raw code
+                    st.session_state.chat_session.history[-1].parts[0].text = f"Result shown: New={tn}, Old={to}"
 
                 except Exception as e:
-                    st.error(f"Calculation Error: {e}")
-            else:
-                st.chat_message("assistant", avatar="🤖").markdown(text)
-                
+                    placeholder.error(f"Calculation Error: {e}")
+
         except Exception as e:
-            st.error(f"Error: {e}")
+            placeholder.error(f"Error: {e}")

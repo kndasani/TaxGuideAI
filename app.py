@@ -25,29 +25,32 @@ if not api_key:
 
 genai.configure(api_key=api_key)
 
-# --- 3. HELPER: ROBUST RETRY LOGIC (Prevents Crashes) ---
+# --- 3. HELPER: RETRY LOGIC ---
 def send_message_with_retry(chat_session, prompt, retries=3):
-    """
-    Sends a message and waits if the server is busy (429 Error).
-    Does NOT use streaming, to prevent UI freezing.
-    """
     for i in range(retries):
         try:
             return chat_session.send_message(prompt)
         except Exception as e:
             if "429" in str(e):
-                # Wait 2s, 4s, 8s...
                 time.sleep(2 ** (i + 1))
                 continue
             else:
                 raise e
-    raise Exception("⚠️ The AI is currently overwhelmed. Please wait 1 minute and try again.")
+    raise Exception("⚠️ AI Server busy. Please wait a moment.")
 
-# --- 4. CALCULATOR ENGINE ---
+# --- 4. CALCULATOR & ITR ENGINE ---
 def calculate_tax_logic(age, salary, business_income, rent_paid, inv_80c, med_80d):
     std_deduction_new = 75000 
     std_deduction_old = 50000
     
+    # 1. Determine ITR Form
+    itr_form = "ITR-1 (Sahaj)"
+    if business_income > 0:
+        itr_form = "ITR-4 (Sugam)" # Presumptive Business
+    elif salary > 5000000:
+        itr_form = "ITR-2" # High Income Salary
+    
+    # 2. Math Logic
     taxable_business = business_income * 0.50
     basic = salary * 0.50
     hra = max(0, rent_paid * 12 - (0.10 * basic))
@@ -56,7 +59,8 @@ def calculate_tax_logic(age, salary, business_income, rent_paid, inv_80c, med_80
     taxable_old = max(0, gross_old - min(inv_80c, 150000) - med_80d)
     taxable_new = max(0, (salary - std_deduction_new) + taxable_business)
 
-    return compute_slabs(taxable_new, taxable_old, age)
+    tax_new, tax_old = compute_slabs(taxable_new, taxable_old, age)
+    return tax_new, tax_old, itr_form
 
 def compute_slabs(inc_new, inc_old, age):
     # New Regime (FY 25-26)
@@ -97,25 +101,28 @@ def load_knowledge():
 
 pdf_library = load_knowledge()
 
-# --- 6. THE CONSULTANT BRAIN ---
+# --- 6. THE EDUCATOR BRAIN ---
 sys_instruction = """
-You are "TaxGuide AI", an expert and empathetic Indian Tax Consultant.
+You are "TaxGuide AI", a patient and helpful Indian Tax Expert.
+**Core Directive:** Do not just ask for data. *Educate* the user on what the data means.
 
-**Your Goal:**
-Discover the user's tax situation conversationally.
+**PHASE 1: PERSONA DISCOVERY**
+- Introduce yourself warmly.
+- Ask: "To give you the best advice, I need to know your income source. Do you earn a Salary, work as a Freelancer/Business owner, or both?"
 
-**PHASE 1: DISCOVERY**
-- Ask: "How do you earn your income? (Salary, Freelancing, or both?)"
-- Wait for the answer.
+**PHASE 2: GATHERING & EDUCATING**
+- Ask questions ONE BY ONE.
+- **Explain the 'Why':**
+  - When asking for Age: "I need your age to check if you qualify for Senior Citizen benefits (higher exemption limits)."
+  - When asking for Rent: "Do you live in a rented house? If yes, we can claim HRA exemption to lower your tax."
+  - When asking for Investments: "Do you invest in PF, PPF, ELSS Mutual Funds, or Life Insurance? These fall under **Section 80C** and can save you tax on up to ₹1.5 Lakhs."
+  - When asking for Medical: "Do you pay health insurance premiums? This is covered under **Section 80D**."
 
-**PHASE 2: DEEP DIVE**
-- Ask for details **ONE BY ONE**.
-- Ask for Age.
-- Ask for Income.
-- Ask guiding questions about Deductions (Rent, Insurance).
+**PHASE 3: USE YOUR KNOWLEDGE BASE**
+- If the user asks specific questions (e.g., "What is Section 44ADA?"), search the PDF files to provide an accurate answer.
 
-**PHASE 3: CALCULATION**
-- Only when you have all numbers, output strictly:
+**PHASE 4: EXECUTION**
+- Once you have the data, output strictly:
   `CALCULATE(age=..., salary=..., business=..., rent=..., inv80c=..., med80d=...)`
 """
 
@@ -128,7 +135,7 @@ with col2:
         st.session_state.chat_session = None
         st.rerun()
 
-st.warning("⚠️ **Disclaimer:** I am an AI Assistant. Verify figures with a CA.", icon="⚠️")
+st.warning("⚠️ **Disclaimer:** I am an AI Assistant. Tax laws are complex. Please verify these figures with a Chartered Accountant (CA) before filing.", icon="⚠️")
 st.divider()
 
 # --- 8. CHAT LOGIC ---
@@ -138,23 +145,19 @@ if "chat_session" not in st.session_state:
         history.append({"role": "user", "parts": pdf_library + ["Here is your tax library."]})
         history.append({"role": "model", "parts": ["I have studied the library."]})
     
-    # Use Gemini 2.0
     model = genai.GenerativeModel('gemini-2.0-flash', system_instruction=sys_instruction)
     st.session_state.chat_session = model.start_chat(history=history)
 
-# --- 9. WELCOME HINTS (RESTORED) ---
-# Check if history is empty (ignoring hidden system messages)
+# --- 9. WELCOME HINTS ---
 if len(st.session_state.chat_session.history) <= 2:
-    st.markdown("#### 👋 Hello! I can help you save tax.")
-    st.info("👇 **Try saying:** *\"I earn 18 Lakhs salary\"* or *\"I am a freelancer\"*")
+    st.markdown("#### 👋 Hello! Let's plan your taxes.")
+    st.info("I can explain tax rules and calculate your liability.\n\n👇 **Start by telling me:**\n*\"I work at a startup...\"* or *\"I am a freelance designer...\"*")
 
 # --- 10. DISPLAY CHAT ---
 start_idx = 2 if pdf_library else 0
 for msg in st.session_state.chat_session.history[start_idx:]:
     role = "user" if msg.role == "user" else "assistant"
     avatar = "👤" if role == "user" else "🤖"
-    
-    # Simple display logic
     with st.chat_message(role, avatar=avatar):
         st.markdown(msg.parts[0].text)
 
@@ -164,11 +167,9 @@ if prompt := st.chat_input("Type your answer..."):
     
     with st.spinner("Analyzing..."):
         try:
-            # NON-STREAMING (Safe) Call
             response = send_message_with_retry(st.session_state.chat_session, prompt)
             text = response.text
             
-            # Check for Calculator Trigger
             if "CALCULATE(" in text:
                 try:
                     params = text.split("CALCULATE(")[1].split(")")[0]
@@ -181,7 +182,7 @@ if prompt := st.chat_input("Type your answer..."):
                             if val_clean:
                                 data[key.strip()] = int(val_clean)
                     
-                    tn, to = calculate_tax_logic(
+                    tn, to, itr = calculate_tax_logic(
                         data['age'], data['salary'], data['business'], 
                         data['rent'], data['inv80c'], data['med80d']
                     )
@@ -189,29 +190,30 @@ if prompt := st.chat_input("Type your answer..."):
                     savings = abs(tn - to)
                     winner = "New Regime" if tn < to else "Old Regime"
                     
-                    # Display the Table
                     st.chat_message("assistant", avatar="🤖").markdown(f"""
-                    ### 🧾 Your Tax Report
+                    ### 🧾 Comprehensive Tax Report
                     
-                    | Regime | Tax Payable |
+                    | Category | Details |
                     | :--- | :--- |
-                    | **New Regime** | **₹{tn:,}** |
-                    | **Old Regime** | **₹{to:,}** |
+                    | **Recommended Regime** | **{winner}** |
+                    | **Tax Payable** | **₹{min(tn, to):,}** |
+                    | **Annual Savings** | ₹{savings:,} |
+                    | **Recommended Form** | `{itr}` |
                     
-                    🏆 **Recommendation:** Choose **{winner}**.
-                    You save **₹{savings:,}**!
+                    ---
+                    **Breakdown:**
+                    * **New Regime Tax:** ₹{tn:,}
+                    * **Old Regime Tax:** ₹{to:,}
                     """)
                     
-                    # Save a clean version to history
                     st.session_state.chat_session.history.append({
                         "role": "model",
-                        "parts": [f"Result shown: New={tn}, Old={to}"]
+                        "parts": [f"Result shown: New={tn}, Old={to}, ITR={itr}"]
                     })
 
                 except Exception as e:
                     st.error(f"Calculation Error: {e}")
             else:
-                # Normal Response
                 st.chat_message("assistant", avatar="🤖").markdown(text)
                 
         except Exception as e:

@@ -3,6 +3,7 @@ import google.generativeai as genai
 import pickle
 import numpy as np
 import os
+import time
 
 # 1. PAGE SETUP
 st.set_page_config(page_title="TaxGuide AI", page_icon="📊")
@@ -27,53 +28,70 @@ if not api_key:
 
 genai.configure(api_key=api_key)
 
-# 3. DEFINE THE BRAIN (The Interviewer Logic)
-# We define this ONCE so the model knows how to behave from the start.
+# 2.1 UPLOAD TAX RULES (Cached)
+@st.cache_resource
+def load_tax_rules():
+    file_path = "tax_rules.pdf"
+    if not os.path.exists(file_path):
+        st.error("⚠️ Error: 'tax_rules.pdf' not found in folder!")
+        return None
+    
+    with st.spinner("Uploading Tax Laws to Brain... (This happens once)"):
+        # Upload the file to Gemini
+        tax_file = genai.upload_file(path=file_path, display_name="Indian Tax Act")
+        
+        # Verify it is ready
+        while tax_file.state.name == "PROCESSING":
+            time.sleep(1)
+            tax_file = genai.get_file(tax_file.name)
+            
+    return tax_file
+
+# Load the file into a variable
+tax_pdf = load_tax_rules()
+
+# 3. DEFINE THE BRAIN (The Interviewer + Lawyer Logic)
 system_instruction = """
-You are a friendly Tax Assistant.
-Your goal is to have a simple chat first, and then do the complex math.
+You are TaxGuide AI, an expert Indian Tax Consultant for FY 2025-26.
 
---- PHASE 1: THE INTERVIEW (Step-by-Step) ---
-Do NOT ask for everything at once. Follow this strict order:
+--- PHASE 1: THE INTERVIEW (STRICT ORDER) ---
+Do NOT ask for everything at once. Ask these ONE BY ONE and wait for the user:
+1. "What is your annual salary?"
+2. "What is your age?" (Crucial for Senior Citizen slabs).
+3. "Do you live in a rented house? If yes, how much is the monthly rent?"
+4. "Do you have 80C investments (PPF, LIC, ELSS)?"
+5. "Do you pay for medical insurance (80D)?"
 
-1. **The Basics:**
-   - Ask: "What is your annual salary?"
-   - Ask: "How old are you?" (Crucial for Senior Citizen slabs).
-   - *Immediate:* Once you have these, show the **New Regime Tax** baseline.
+--- PHASE 2: THE CALCULATION (STRICT MATH) ---
+When calculating, you MUST follow these logic steps:
 
-2. **The "One Question" Rule:**
-   - Ask these ONE BY ONE. Wait for the answer.
-   A. "Do you live in a rented house? If yes, how much is the monthly rent?"
-   B. "Do you have 80C investments (PPF, LIC, ELSS)?"
-   C. "Do you pay for medical insurance (80D)?"
+**STEP 1: SANITIZE & VERIFY (Using PDF)**
+- **80C CAP:** Check Section 80C in the PDF. The limit is 1.5 Lakhs. If user input > 1.5L, USE 1.5L.
+- **80D CAP:** Check Section 80D. Limit is 25k (Self) or 50k (Senior).
+- *Output Requirement:* If you cap a value, explicitly say: "⚠️ *I limited your 80C deduction to ₹1.5 Lakhs as per Section 80C.*"
 
---- PHASE 2: THE CALCULATION (Strict Rules) ---
-When calculating the final comparison, you MUST follow these logic steps:
-
-**STEP 1: SANITIZE INPUTS (CRITICAL)**
-Before calculating Old Regime tax, apply these limits:
-- **80C CAP:** If user input > 1.5 Lakhs (e.g., 2.5L), USE **1.5 Lakhs**.
-  - *Required Output:* You MUST write: "⚠️ *Note: I limited your 80C deduction to ₹1.5 Lakhs as per tax laws.*"
-- **80D CAP:** Limit to 25k (Self) or 50k (Parents/Senior).
-
-**STEP 2: HRA MATH**
-- If Rent is paid: HRA Exemption = Rent Paid - (10% of Assumed Basic).
+**STEP 2: HRA TRANSPARENCY**
+- Calculate HRA Exemption = Min(Rent Paid - 10% of Basic, 50% of Basic).
 - *Assume Basic = 50% of Total Income.*
-- Show this formula in the output.
+- **REQUIRED:** You must print the "Show Your Work" math block for HRA so the user sees the numbers.
 
 **STEP 3: TAX SLABS (FY 2025-26)**
-- **New Regime:** 0-12L Tax Free (Rebate). Standard Deduction 75k.
+- **New Regime:** Standard Deduction 75k.
 - **Old Regime:** Standard Deduction 50k.
-  - Age < 60: Exempt up to 2.5L.
-  - Age 60+: Exempt up to 3L.
+- Use the PDF to confirm slab rates if needed.
 
---- EXECUTION ---
-Calculate accurately. If inputs are messy, fix them (Sanitize) before calculating.
+--- GOAL ---
+Be friendly during the interview, but be a strict mathematician during the calculation.
 """
+
 # 4. INITIALIZE CHAT MEMORY
-# We use a persistent chat session so it remembers your previous answers (like Salary or Rent).
 if "chat_session" not in st.session_state:
-    model = genai.GenerativeModel('gemini-2.0-flash', system_instruction=system_instruction)
+    # We pass the tax_pdf file AND the instructions to the model
+    brain_inputs = [system_instruction]
+    if tax_pdf:
+        brain_inputs.append(tax_pdf)
+        
+    model = genai.GenerativeModel('gemini-2.0-flash', system_instruction=brain_inputs)
     st.session_state.chat_session = model.start_chat(history=[])
 
 # 5. DISPLAY CHAT HISTORY

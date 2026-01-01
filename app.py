@@ -4,35 +4,30 @@ import os
 import time
 from dotenv import load_dotenv
 
-# --- CONFIGURATION ---
-load_dotenv() # Load local .env file
+# --- CONFIGURATION & SETUP ---
+load_dotenv() 
+st.set_page_config(page_title="TaxGuide AI", page_icon="🇮🇳", layout="wide")
 
-# Try getting key from Environment (Local) OR Streamlit Secrets (Cloud)
+# Safe API Key Loading
 api_key = os.getenv("GEMINI_API_KEY")
-
 if not api_key:
     try:
-        # Check Streamlit Cloud Secrets
         api_key = st.secrets["GEMINI_API_KEY"]
     except FileNotFoundError:
-        # If neither works, stop
-        st.error("🔑 API Key Missing! Please add 'GEMINI_API_KEY' to your .env file (local) or Streamlit Secrets (cloud).")
+        st.error("🔑 API Key Missing! Please add 'GEMINI_API_KEY' to your .env file or Streamlit Secrets.")
         st.stop()
 
 genai.configure(api_key=api_key)
 
-# --- 1. THE CALCULATOR ENGINES (Python Math) ---
-
+# --- 1. THE CALCULATOR ENGINES ---
 def calculate_salary_tax(salary, rent_paid, inv_80c, med_80d):
     """Engine for Salaried Employees"""
     std_deduction_new = 75000  # FY 25-26
     std_deduction_old = 50000
     
-    # HRA Logic (Simplified: Rent - 10% Basic)
     basic = salary * 0.50
     hra = max(0, rent_paid * 12 - (0.10 * basic))
     
-    # Taxable Income
     inc_old = salary - std_deduction_old - min(inv_80c, 150000) - med_80d - hra
     inc_new = salary - std_deduction_new 
     
@@ -40,19 +35,14 @@ def calculate_salary_tax(salary, rent_paid, inv_80c, med_80d):
 
 def calculate_freelance_tax(gross_receipts, expenses_claimed, inv_80c, med_80d):
     """Engine for Freelancers (Section 44ADA)"""
-    # Section 44ADA: Deemed Income is 50% of Receipts
     presumptive_income = gross_receipts * 0.50
-    
-    # Old Regime Deductions
     inc_old = presumptive_income - min(inv_80c, 150000) - med_80d
-    # New Regime (No deductions)
     inc_new = presumptive_income 
-    
     return compute_tax_slabs(inc_new, inc_old)
 
 def compute_tax_slabs(inc_new, inc_old):
     """Shared Logic for Tax Slabs FY 2025-26"""
-    # --- NEW REGIME (FY 25-26 Updated) ---
+    # New Regime (FY 25-26 Updated)
     tax_new = 0
     temp = inc_new
     if temp > 2400000: tax_new += (temp - 2400000) * 0.30; temp = 2400000
@@ -61,35 +51,28 @@ def compute_tax_slabs(inc_new, inc_old):
     if temp > 1200000: tax_new += (temp - 1200000) * 0.15; temp = 1200000
     if temp > 800000:  tax_new += (temp - 800000)  * 0.10; temp = 800000
     if temp > 400000:  tax_new += (temp - 400000)  * 0.05
-    
-    # Rebate 87A (New): Zero Tax if Taxable Income <= 12 Lakhs
-    if inc_new <= 1200000: tax_new = 0
+    if inc_new <= 1200000: tax_new = 0 # Rebate
 
-    # --- OLD REGIME (Unchanged) ---
+    # Old Regime (Unchanged)
     tax_old = 0
     temp = inc_old
     if temp > 1000000: tax_old += (temp - 1000000) * 0.30; temp = 1000000
     if temp > 500000:  tax_old += (temp - 500000)  * 0.20; temp = 500000
     if temp > 250000:  tax_old += (temp - 250000)  * 0.05
-    
-    # Rebate 87A (Old): Zero Tax if Taxable Income <= 5 Lakhs
-    if inc_old <= 500000: tax_old = 0
+    if inc_old <= 500000: tax_old = 0 # Rebate
         
-    return int(tax_new * 1.04), int(tax_old * 1.04) # +4% Cess
+    return int(tax_new * 1.04), int(tax_old * 1.04)
 
-# --- 2. LOAD THE LIBRARY (All 3 PDFs) ---
+# --- 2. LOAD PDF LIBRARY ---
 @st.cache_resource
 def load_rag_data():
-    folder_path = "." 
     library = []
-    
-    # Map filenames to "Nice Names" for Gemini
+    # Map filenames to nice names
     target_files = {
         "salary_rules.pdf": "Salary Rules",
         "freelancer_rules.pdf": "Freelancer Rules",
         "capital_gains.pdf": "Capital Gains Rules"
     }
-    
     for filename, display_name in target_files.items():
         if os.path.exists(filename):
             try:
@@ -98,130 +81,122 @@ def load_rag_data():
                     time.sleep(1)
                     f = genai.get_file(f.name)
                 library.append(f)
-                print(f"✅ Loaded: {filename}")
-            except Exception as e:
-                st.error(f"Failed to load {filename}: {e}")
-    
+            except Exception:
+                continue 
     return library
 
 pdf_library = load_rag_data()
 
-# --- 3. SIDEBAR & PERSONA LOGIC ---
+# --- 3. SIDEBAR (PROFILE & DISCLAIMER) ---
 with st.sidebar:
-    st.title("👤 Your Profile")
+    st.image("https://cdn-icons-png.flaticon.com/512/2534/2534204.png", width=50)
+    st.title("TaxGuide AI")
+    st.markdown("Your AI Tax Assistant for FY 2025-26")
+    
+    st.markdown("---")
+    st.subheader("👤 Select Profile")
     user_type = st.radio(
         "I am a:",
-        ["Salaried Employee", "Freelancer / Doctor / Tech", "Investor / Trader"]
+        ["Salaried Employee", "Freelancer / Doctor", "Investor / Trader"]
     )
     
     st.markdown("---")
-    if user_type == "Salaried Employee":
-        st.info("ℹ️ **Features:**\n- HRA & Standard Deduction\n- Form 16 Help\n- Old vs New Comparison")
-    elif user_type == "Freelancer / Doctor / Tech":
-        st.info("ℹ️ **Features:**\n- Section 44ADA (50% Tax)\n- Invoice-based Calc\n- Audit Rules")
-    else:
-        st.info("ℹ️ **Features:**\n- Capital Gains (LTCG/STCG)\n- Stock Market Rules\n- **Advisory Only (No Calc)**")
+    st.warning("⚠️ **Disclaimer:**\nI am an AI, not a Chartered Accountant. Tax laws are complex. Please verify calculations with a professional before filing.")
 
-# --- 4. DEFINE THE BRAIN ---
-sys_instruction = ""
-
+# --- 4. BRAIN INSTRUCTIONS ---
 if user_type == "Salaried Employee":
     sys_instruction = """
     Role: Expert Tax Assistant for Salaried Employees (FY 2025-26).
-    Knowledge Base: Use 'Salary Rules' PDF.
-    Goal: Get 4 numbers: Salary, Rent, 80C, 80D.
-    Output Trigger: `CALCULATE_SALARY(salary=..., rent=..., inv80c=..., med80d=...)`
+    Knowledge: Use 'Salary Rules' PDF.
+    Goal: Gather Salary, Rent, 80C, 80D.
+    Output: `CALCULATE_SALARY(salary=..., rent=..., inv80c=..., med80d=...)`
     """
-elif user_type == "Freelancer / Doctor / Tech":
+elif user_type == "Freelancer / Doctor":
     sys_instruction = """
     Role: Expert Tax Assistant for Freelancers (Section 44ADA).
-    Knowledge Base: Use 'Freelancer Rules' PDF.
-    Context: 44ADA applies to Doctors, Engineers, Architects, Lawyers, IT Consultants.
-    Goal: Get 3 numbers: Gross Receipts, 80C, 80D.
-    Output Trigger: `CALCULATE_FREELANCE(receipts=..., inv80c=..., med80d=...)`
+    Knowledge: Use 'Freelancer Rules' PDF.
+    Goal: Gather Gross Receipts, 80C, 80D.
+    Output: `CALCULATE_FREELANCE(receipts=..., inv80c=..., med80d=...)`
     """
 else:
-    sys_instruction = """
-    Role: Expert Tax Advisor for Investors.
-    Knowledge Base: Use 'Capital Gains Rules' PDF.
-    Constraint: DO NOT CALCULATE TAX. Explain rules, rates (12.5% vs 20%), and grandfathering clauses.
-    """
+    sys_instruction = "Role: Expert Tax Advisor for Investors. Use 'Capital Gains Rules' PDF. Explain rules, do NOT calculate tax."
 
 # --- 5. CHAT INTERFACE ---
-st.title(f"🇮🇳 TaxGuide AI: {user_type}")
-
-# Reset chat if persona changes
-if "last_persona" not in st.session_state or st.session_state.last_persona != user_type:
-    st.session_state.chat_session = None
-    st.session_state.last_persona = user_type
-
-if "chat_session" not in st.session_state or st.session_state.chat_session is None:
+if "chat_session" not in st.session_state or st.session_state.get("last_persona") != user_type:
     history = []
     if pdf_library:
-        # Pass ALL PDFs to the model so it can reference any rule if needed
-        history.append({
-            "role": "user", 
-            "parts": pdf_library + ["Here is the Tax Library. Answer based on my selected profile."]
-        })
-        history.append({"role": "model", "parts": ["Understood. I will use the relevant documents for your profile."]})
+        history.append({"role": "user", "parts": pdf_library + ["Use these tax rules."]})
+        history.append({"role": "model", "parts": ["Understood. I have access to the library."]})
     
-    model = genai.GenerativeModel('gemini-1.5-flash', system_instruction=sys_instruction)
+    # FIX: Using 'gemini-2.0-flash' which is available in your list
+    try:
+        model = genai.GenerativeModel('gemini-2.0-flash', system_instruction=sys_instruction)
+    except:
+        model = genai.GenerativeModel('gemini-2.0-flash', system_instruction=sys_instruction)
+        
     st.session_state.chat_session = model.start_chat(history=history)
+    st.session_state.last_persona = user_type
 
-# Display Chat
+# --- 6. WELCOME SCREEN ---
+if len(st.session_state.chat_session.history) <= 2:
+    st.markdown(f"## 👋 Hello! I'm your {user_type} Assistant.")
+    st.markdown("I can help you plan taxes, choose regimes, and understand rules.")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown("💰 **Ask me to calculate your tax**")
+    with col2:
+        st.info("👇 **Type below to start!**\n*Example: My salary is 18 Lakhs...*")
+
+# --- 7. DISPLAY HISTORY ---
 start_idx = 2 if pdf_library else 0
 for msg in st.session_state.chat_session.history[start_idx:]:
     role = "user" if msg.role == "user" else "assistant"
-    st.chat_message(role).markdown(msg.parts[0].text)
+    with st.chat_message(role):
+        st.markdown(msg.parts[0].text)
 
-# Handle Input
-if prompt := st.chat_input("Ask about tax..."):
+# --- 8. HANDLE INPUT ---
+if prompt := st.chat_input("Ask about tax savings, HRA, or calculations..."):
     st.chat_message("user").markdown(prompt)
     
-    with st.spinner("Analyzing..."):
+    with st.spinner("Analyzing Tax Rules..."):
         try:
             response = st.session_state.chat_session.send_message(prompt)
             text = response.text
             
-            # --- TRIGGER HANDLERS ---
-            if "CALCULATE_SALARY" in text:
+            # Catch Calculator Triggers
+            if "CALCULATE_" in text:
                 try:
-                    params = text.split("CALCULATE_SALARY(")[1].split(")")[0]
-                    s = int(params.split("salary=")[1].split(",")[0])
-                    r = int(params.split("rent=")[1].split(",")[0])
-                    i = int(params.split("inv80c=")[1].split(",")[0])
-                    m = int(params.split("med80d=")[1].split(")")[0])
+                    if "CALCULATE_SALARY" in text:
+                        params = text.split("CALCULATE_SALARY(")[1].split(")")[0]
+                        s = int(params.split("salary=")[1].split(",")[0])
+                        r = int(params.split("rent=")[1].split(",")[0])
+                        i = int(params.split("inv80c=")[1].split(",")[0])
+                        m = int(params.split("med80d=")[1].split(")")[0])
+                        tn, to = calculate_salary_tax(s, r, i, m)
+                        
+                    elif "CALCULATE_FREELANCE" in text:
+                        params = text.split("CALCULATE_FREELANCE(")[1].split(")")[0]
+                        g = int(params.split("receipts=")[1].split(",")[0])
+                        i = int(params.split("inv80c=")[1].split(",")[0])
+                        m = int(params.split("med80d=")[1].split(")")[0])
+                        tn, to = calculate_freelance_tax(g, 0, i, m)
+
+                    savings = abs(tn - to)
+                    winner = "New Regime" if tn < to else "Old Regime"
                     
-                    tn, to = calculate_salary_tax(s, r, i, m)
                     st.chat_message("assistant").markdown(f"""
-                    ### 💰 Tax Calculation (Salaried)
+                    ### 📊 Tax Analysis Complete
                     | Regime | Tax Payable |
                     | :--- | :--- |
-                    | **New (FY26)** | **₹{tn:,}** |
-                    | **Old** | **₹{to:,}** |
-                    *Verdict: You save ₹{abs(tn-to):,} by choosing the {'New' if tn < to else 'Old'} regime.*
-                    """)
-                except: st.chat_message("assistant").markdown(text)
-                
-            elif "CALCULATE_FREELANCE" in text:
-                try:
-                    params = text.split("CALCULATE_FREELANCE(")[1].split(")")[0]
-                    g = int(params.split("receipts=")[1].split(",")[0])
-                    i = int(params.split("inv80c=")[1].split(",")[0])
-                    m = int(params.split("med80d=")[1].split(")")[0])
+                    | **New Regime** | **₹{tn:,}** |
+                    | **Old Regime** | **₹{to:,}** |
                     
-                    tn, to = calculate_freelance_tax(g, 0, i, m)
-                    st.chat_message("assistant").markdown(f"""
-                    ### 💼 Tax Calculation (Freelancer 44ADA)
-                    *Assumed 50% Profit Margin*
-                    
-                    | Regime | Tax Payable |
-                    | :--- | :--- |
-                    | **New (FY26)** | **₹{tn:,}** |
-                    | **Old** | **₹{to:,}** |
+                    🎉 **Recommendation:** Choose **{winner}**.
+                    You will save **₹{savings:,}** per year!
                     """)
-                except: st.chat_message("assistant").markdown(text)
-                
+                except:
+                    st.chat_message("assistant").markdown(text)
             else:
                 st.chat_message("assistant").markdown(text)
                 

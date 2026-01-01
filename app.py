@@ -51,6 +51,7 @@ def load_tax_rules():
 tax_pdf = load_tax_rules()
 
 # 3. DEFINE THE BRAIN (The Interviewer + Lawyer Logic)
+# NOTE: System instruction must be TEXT ONLY. 
 system_instruction = """
 You are TaxGuide AI, an expert Indian Tax Consultant for FY 2025-26.
 
@@ -66,7 +67,7 @@ Do NOT ask for everything at once. Ask these ONE BY ONE and wait for the user:
 When calculating, you MUST follow these logic steps:
 
 **STEP 1: SANITIZE & VERIFY (Using PDF)**
-- **80C CAP:** Check Section 80C in the PDF. The limit is 1.5 Lakhs. If user input > 1.5L, USE 1.5L.
+- **80C CAP:** Check Section 80C in the provided PDF context. The limit is 1.5 Lakhs. If user input > 1.5L, USE 1.5L.
 - **80D CAP:** Check Section 80D. Limit is 25k (Self) or 50k (Senior).
 - *Output Requirement:* If you cap a value, explicitly say: "⚠️ *I limited your 80C deduction to ₹1.5 Lakhs as per Section 80C.*"
 
@@ -86,13 +87,21 @@ Be friendly during the interview, but be a strict mathematician during the calcu
 
 # 4. INITIALIZE CHAT MEMORY
 if "chat_session" not in st.session_state:
-    # We pass the tax_pdf file AND the instructions to the model
-    brain_inputs = [system_instruction]
+    model = genai.GenerativeModel('gemini-2.0-flash', system_instruction=system_instruction)
+    
+    # We inject the PDF into the history so the model "sees" it immediately
+    initial_history = []
     if tax_pdf:
-        brain_inputs.append(tax_pdf)
+        initial_history.append({
+            "role": "user",
+            "parts": [tax_pdf, "Here is the official Income Tax Act. Use this as your source of truth."]
+        })
+        initial_history.append({
+            "role": "model",
+            "parts": ["Understood. I have read the Income Tax Act and will use it to verify all deductions and rules."]
+        })
         
-    model = genai.GenerativeModel('gemini-2.0-flash', system_instruction=brain_inputs)
-    st.session_state.chat_session = model.start_chat(history=[])
+    st.session_state.chat_session = model.start_chat(history=initial_history)
 
 # 5. DISPLAY CHAT HISTORY
 

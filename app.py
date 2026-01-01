@@ -131,15 +131,35 @@ if st.session_state.mode is None:
 
 # SCREEN 2: THE CHAT INTERFACE
 else:
-    # Display History
+    # --- SAFE DISPLAY HISTORY LOOP (Fixes the Crash) ---
     for msg in st.session_state.chat_session.history:
-        # Hide system/trigger messages
-        if getattr(msg.parts[0], "text", "") and "LOAD" not in msg.parts[0].text:
-            if "Result:" not in msg.parts[0].text: # We show result via card, not text
-                role = "user" if msg.role == "user" else "assistant"
+        # 1. SAFELY EXTRACT TEXT & ROLE
+        text = ""
+        role = ""
+        
+        # Check if it's a Dictionary (Manual Append)
+        if isinstance(msg, dict):
+            role = msg.get("role")
+            parts = msg.get("parts", [])
+            if parts:
+                # Handle list of parts which might be strings or objects
+                first = parts[0]
+                if isinstance(first, str):
+                    text = first
+                elif hasattr(first, "text"): # If it's a file/part object
+                    text = first.text
+        # Check if it's a proper Object (SDK standard)
+        else:
+            role = msg.role
+            text = msg.parts[0].text
+
+        # 2. FILTER & DISPLAY
+        if text and "LOAD" not in text:
+            if "Result:" not in text: # We show result via card, not text
+                role_name = "user" if role == "user" else "assistant"
                 avatar = "👤" if role == "user" else "🤖"
-                with st.chat_message(role, avatar=avatar):
-                    st.markdown(msg.parts[0].text)
+                with st.chat_message(role_name, avatar=avatar):
+                    st.markdown(text)
 
     # Input Handling
     if prompt := st.chat_input("Type here..."):

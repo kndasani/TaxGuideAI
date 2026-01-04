@@ -67,9 +67,18 @@ def safe_math_eval(expression):
     except Exception as e: return f"Error ({e})"
 
 def calculate_hra_exemption(basic_annual, rent_annual, metro=True):
+    # Rule 1: Actual HRA Received (Assumed 50% of Basic if not strictly provided)
+    cond1 = basic_annual * 0.50 
+    
+    # Rule 2: Rent Paid - 10% of Basic
     cond2 = rent_annual - (0.10 * basic_annual)
+    
+    # Rule 3: 50% of Basic (Metro) or 40% (Non-Metro)
     cond3 = (0.50 if metro else 0.40) * basic_annual
-    return int(max(0, min(cond2, cond3)))
+    
+    # Exemption is the LEAST of the three
+    exemption = max(0, min(cond1, cond2, cond3))
+    return int(exemption)
 
 def calculate_tax_detailed(age, salary, business_income, rent_paid, inv_80c, med_80d, home_loan, nps, edu_loan, donations, savings_int, other_deductions, custom_basic=0):
     std_deduction_new = 75000; std_deduction_old = 50000
@@ -118,7 +127,7 @@ def calculate_tax_detailed(age, salary, business_income, rent_paid, inv_80c, med
                 "std": std_deduction_old, 
                 "hra": hra_exemption, 
                 "80c": min(inv_80c, 150000), 
-                "med80d": med_80d, # <--- FIXED: Now correctly using 'med_80d' argument
+                "med80d": med_80d,
                 "home_loan": deduction_home_loan,
                 "nps": deduction_nps,
                 "80e": deduction_80e,
@@ -311,7 +320,7 @@ else:
                                        res['old']['deductions']['other'])
 
                         table_data = {
-                            "Item": ["Gross Salary", "HRA Exemption ", "Standard Deduction", "80C (PF/LIC/PPF) ", "NPS (80CCD) ", "Home Loan Interest ", "Health Ins (80D)", "Other (Edu/Donations/Int)", "Taxable Income", "Net Tax Payable"],
+                            "Item": ["Gross Salary", "HRA Exemption [Image of HRA tax exemption]", "Standard Deduction", "80C (PF/LIC/PPF) [Image of Section 80C 80D tax deduction list]", "NPS (80CCD) [Image of tax deduction 80C vs 80CCD vs 24b]", "Home Loan Interest [Image of Section 24b home loan tax benefit]", "Health Ins (80D)", "Other (Edu/Donations/Int)", "Taxable Income", "Net Tax Payable"],
                             "New Regime": [
                                 f"₹{d['salary']:,}", "₹0", "₹75,000", "₹0", "₹0", "₹0", "₹0", "₹0",
                                 f"₹{res['new']['net']:,}", f"₹{tn:,}"

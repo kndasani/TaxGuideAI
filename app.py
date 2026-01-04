@@ -47,16 +47,11 @@ def inject_knowledge(persona_type):
     elif persona_type == "CAPITAL_GAINS": return get_pdf_file("capital_gains.pdf")
     return None
 
-# --- 4. CALCULATOR ENGINE ---
-
-# Core 1: The Robust Math Engine (Parenthesis Balancer)
+# --- 4. CALCULATOR ENGINE (Robust) ---
 def safe_math_eval(expression):
     try:
-        # 1. Strip Labels & Assignments
         if ":" in expression: expression = expression.split(":")[-1]
         if "=" in expression: expression = expression.split("=")[-1]
-
-        # 2. Cleaning & Normalization
         expression = expression.lower().strip()
         expression = expression.replace("\n", " ").replace("\t", " ") 
         expression = expression.replace("`", "")       
@@ -64,51 +59,24 @@ def safe_math_eval(expression):
         expression = expression.replace("%", "*0.01")  
         expression = expression.replace("^", "**")     
         
-        # 3. Parenthesis Balancing (The Fix)
         open_count = expression.count('(')
         close_count = expression.count(')')
-        if open_count > close_count:
-            expression += ')' * (open_count - close_count)
-        elif close_count > open_count:
-            # remove extra closing parens from the end
-            expression = expression.rstrip(')') 
-            # If still unbalanced, just try to strip from right until valid or empty
-            while expression.count(')') > expression.count('('):
-                 expression = expression[::-1].replace(')', '', 1)[::-1]
-
-        # 4. Smart Comma Handling
+        if open_count > close_count: expression += ')' * (open_count - close_count)
+        elif close_count > open_count: expression = expression.rstrip(')')
+        
         expression = re.sub(r'(\d),(\d)', r'\1\2', expression)
-        
-        # 5. Whitelist Validation
         allowed_chars = set("0123456789+-*/()., <>=abcdefhilmnorstuwx")
-        
-        if not set(expression).issubset(allowed_chars):
-            bad_chars = set(expression) - allowed_chars
-            return f"Error: Unsafe characters found: {bad_chars}"
+        if not set(expression).issubset(allowed_chars): return "Error: Unsafe chars"
 
-        # 6. Safe Evaluation
-        safe_dict = {
-            "min": min, "max": max, "abs": abs, "round": round,
-            "int": int, "float": float, "pow": pow,
-            "ceil": math.ceil, "floor": math.floor
-        }
-        
+        safe_dict = {"min": min, "max": max, "abs": abs, "round": round, "int": int, "float": float, "pow": pow, "ceil": math.ceil, "floor": math.floor}
         result = eval(expression, {"__builtins__": None}, safe_dict)
-        
-        # 7. Formatting
-        if isinstance(result, (int, float)):
-            return f"{int(result):,}"
+        if isinstance(result, (int, float)): return f"{int(result):,}"
         return str(result)
-    except Exception as e:
-        return f"Error ({e})"
+    except Exception as e: return f"Error ({e})"
 
-# Core 2: The Full Regime Calculator
 def calculate_tax_detailed(age, salary, business_income, rent_paid, inv_80c, med_80d, custom_basic=0):
     std_deduction_new = 75000; std_deduction_old = 50000
-    
-    # Flexible Basic: If unknown, assume 50%
     basic = custom_basic if custom_basic > 0 else (salary * 0.50)
-    
     taxable_business = business_income * 0.50
     hra_exemption = max(0, rent_paid * 12 - (0.10 * basic))
     
@@ -143,53 +111,52 @@ def compute_tax_breakdown(income, age, regime):
         if t > 500000:  tax += (t-500000)*0.20;  t=500000
         if t > limit:   tax += (t-limit)*0.05
         if income <= 500000: tax = 0
-
     surcharge = 0
     if income > 5000000:
         rate = 0.10 if income <= 10000000 else 0.15
         if income > 20000000: rate = 0.25
         if regime == "old" and income > 50000000: rate = 0.37
         surcharge = tax * rate
-
     cess = (tax + surcharge) * 0.04
     total = int(tax + surcharge + cess)
     return {"base": int(tax), "surcharge": int(surcharge), "cess": int(cess), "total": total}
 
-# --- 5. THE TWO BRAINS ---
+# --- 5. THE TWO BRAINS (ANSWER-FIRST) ---
 
-# Brain A: Calculator (Aggressive/Fast)
+# Brain A: Calculator (The "Shoot First, Ask Later" Engine)
 sys_instruction_calc = """
 You are "TaxGuide AI". 
-**Goal:** Estimate Tax IMMEDIATELY.
+**Goal:** Provide the Tax Number IMMEDIATELY.
 
-**RULE:** If User gives Income (e.g. "Tax on 15L"):
-1. Assume Age=30, Rent=0, Deductions=0, Basic=50%.
-2. Output `CALCULATE(...)` instantly.
-3. Post-calculation, ask if they want to refine.
+**THE GOLDEN RULE:**
+1. If the user mentions an Income Amount (e.g. "15L", "20k"):
+   - **STOP** asking questions.
+   - **ASSUME** defaults: Age=30, Rent=0, Deductions=0, Basic=50%.
+   - **OUTPUT** `CALCULATE(...)` INSTANTLY.
+   
+2. ONLY AFTER the result is shown, ask:
+   - "This calculation assumes 0 deductions. Do you want to add Rent (HRA) or Investments (80C)?"
 
-**MEMORY:** Remember user data.
+**DO NOT** say "I need more details".
+**DO NOT** say "Please tell me your age".
+**JUST CALCULATE.**
 """
 
-# Brain B: The Professor (Anti-Label)
+# Brain B: The Professor (The "Helpful Genius")
 sys_instruction_rules = """
 You are "TaxGuide AI".
 **Goal:** Answer user questions accurately using Python.
 
-**CRITICAL RULE - MATH TOOL:**
-Use `CALCULATE_MATH(expression)` for all spot checks.
+**AUTO-TRIGGER RULE:**
+If the user provides ANY numbers (e.g., "Salary 15L, Rent 20k"):
+1. **DO NOT** ask for missing info (like Basic Salary).
+2. **ASSUME** standard values (Basic = 50% of Salary).
+3. **IMMEDIATELY** output `CALCULATE_MATH(...)`.
 
 **RESTRICTIONS:**
-1. **NUMBERS ONLY:** No words. No variable names.
-2. **NO LABELS:** Do not write "Salary:" or "HRA=". Just the math.
-   - ❌ BAD: `CALCULATE_MATH(Salary: 50000 * 12)`
-   - ✅ GOOD: `CALCULATE_MATH(50000 * 12)`
-3. **MISSING DATA:** Silently assume `Basic = 50%` if missing.
-
-**SINGLE TRUTH:**
-You MUST copy the result provided by Python exactly.
-
-**OUTPUT FORMAT:**
-[Main Answer] ||| [Technical Details]
+1. **NUMBERS ONLY:** No words inside `CALCULATE_MATH`.
+2. **NO LABELS:** No "Salary:" prefixes.
+3. **SINGLE TRUTH:** Copy the Python result EXACTLY.
 
 **LOGIC:**
 1. DETECT CONTEXT -> LOAD
@@ -250,7 +217,8 @@ else:
             if parts and isinstance(parts[0], str): text = parts[0]
         else:
             role = msg.role; text = msg.parts[0].text
-            
+        
+        # Display Logic
         if text and "LOAD" not in text and "Result:" not in text and "SWITCH_TO_CALC" not in text and "CALCULATE_MATH" not in text:
             role_name = "user" if role == "user" else "assistant"
             avatar = "👤" if role == "user" else "🤖"
@@ -270,12 +238,9 @@ else:
                         expression = text.split("CALCULATE_MATH(")[1][:-1]
                         result = safe_math_eval(expression)
                         st.toast(f"🧮 Computed: {result}", icon="✅")
-                        
-                        # INJECT CONSISTENCY PROMPT
                         instruction = f"The result is {result}. You MUST state: 'The calculated amount is ₹{result}.' in the Main Answer section."
                         response = send_message_with_retry(st.session_state.chat_session, instruction)
                         text = response.text
-                        
                     except Exception as e: st.error(f"Math Tool Error: {e}")
 
                 # --- TOOL: HANDOVER ---

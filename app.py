@@ -52,20 +52,26 @@ def inject_knowledge(persona_type):
 def safe_math_eval(expression):
     """Robust Math Tool for Spot Checks"""
     try:
+        # Strip labels like "Salary:" or "x="
         if ":" in expression: expression = expression.split(":")[-1]
         if "=" in expression: expression = expression.split("=")[-1]
         
+        # Normalize
         expression = expression.lower().strip()
         expression = expression.replace("\n", " ").replace("\t", " ") 
         expression = expression.replace("`", "").replace("₹", "")       
         expression = expression.replace("%", "*0.01").replace("^", "**")     
         
+        # Balance Parentheses
         open_c = expression.count('(')
         close_c = expression.count(')')
         if open_c > close_c: expression += ')' * (open_c - close_c)
         elif close_c > open_c: expression = expression.rstrip(')')
         
+        # Handle commas inside numbers vs args
         expression = re.sub(r'(\d),(\d)', r'\1\2', expression)
+        
+        # Security Whitelist
         allowed = set("0123456789+-*/()., <>=abcdefhilmnorstuwx")
         if not set(expression).issubset(allowed): return "Error: Unsafe characters"
 
@@ -151,128 +157,139 @@ B. **SPOT CHECK MATH** (Use `CALCULATE_MATH(...)`)
 """
 
 # --- 6. UI SETUP ---
-if "chat_session" not in st.session_state:
+if "chat_started" not in st.session_state:
+    st.session_state.chat_started = False
     st.session_state.chat_session = None
     st.session_state.loaded_persona = None
 
 col1, col2 = st.columns([5, 1])
 with col1: st.markdown("### 🇮🇳 TaxGuide AI")
 with col2: 
-    if st.button("🔄"):
+    if st.button("🔄", help="Reset App"):
         st.session_state.clear()
         st.rerun()
 
-# Initialize Chat
-if not st.session_state.chat_session:
-    model = genai.GenerativeModel('gemini-2.0-flash', system_instruction=sys_instruction_unified)
-    st.session_state.chat_session = model.start_chat(history=[])
-    st.session_state.chat_session.history.append({"role": "model", "parts": ["Hi! I can calculate your tax or answer rules. What is your Salary?"]})
+# --- SCREEN 1: LANDING PAGE (Buttons Restored) ---
+if not st.session_state.chat_started:
+    st.markdown("#### 👋 How can I help you today?")
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("💰 Calculate My Tax", use_container_width=True):
+            st.session_state.chat_started = True
+            model = genai.GenerativeModel('gemini-2.0-flash', system_instruction=sys_instruction_unified)
+            st.session_state.chat_session = model.start_chat(history=[])
+            # Seed history to set context without changing Brain
+            st.session_state.chat_session.history.append({"role": "model", "parts": ["Hi! I'm ready to calculate. Please tell me your Salary and any Rent/Investments."]})
+            st.rerun()
+    with c2:
+        if st.button("📚 Ask Tax Rules", use_container_width=True):
+            st.session_state.chat_started = True
+            model = genai.GenerativeModel('gemini-2.0-flash', system_instruction=sys_instruction_unified)
+            st.session_state.chat_session = model.start_chat(history=[])
+            # Seed history to set context
+            st.session_state.chat_session.history.append({"role": "model", "parts": ["Hi! I can explain tax rules (HRA, LTCG, Deductions). What's your question?"]})
+            st.rerun()
 
-# --- 7. CHAT LOGIC ---
-def render_message(text, role, avatar):
-    with st.chat_message(role, avatar=avatar):
-        if "|||" in text:
-            summary, details = text.split("|||", 1)
-            st.markdown(summary.strip())
-            with st.expander("📝 View Calculation Details"):
-                st.markdown(details.strip())
-        else:
-            st.markdown(text)
+# --- SCREEN 2: CHAT INTERFACE ---
+else:
+    # --- 7. CHAT LOGIC ---
+    def render_message(text, role, avatar):
+        with st.chat_message(role, avatar=avatar):
+            if "|||" in text:
+                summary, details = text.split("|||", 1)
+                st.markdown(summary.strip())
+                with st.expander("📝 View Calculation Details"):
+                    st.markdown(details.strip())
+            else:
+                st.markdown(text)
 
-# --- SAFE HISTORY ITERATION FIX (Line 192) ---
-for msg in st.session_state.chat_session.history:
-    text = ""
-    role_label = ""
-    
-    # CASE 1: Handle Manual Dictionary entries
-    if isinstance(msg, dict):
-        role_label = msg.get("role")
-        parts = msg.get("parts", [])
-        if parts: text = parts[0]
+    # Safe History Iteration
+    for msg in st.session_state.chat_session.history:
+        text = ""
+        role_label = ""
         
-    # CASE 2: Handle Gemini Objects
-    else:
-        role_label = msg.role
-        if msg.parts: text = msg.parts[0].text
-    
-    role_icon = "👤" if role_label == "user" else "🤖"
-    
-    # Hide tool triggers from UI
-    if text and not any(x in text for x in ["CALCULATE(", "CALCULATE_MATH(", "LOAD(", "Result:"]):
-        render_message(text, role_label, role_icon)
+        if isinstance(msg, dict):
+            role_label = msg.get("role")
+            parts = msg.get("parts", [])
+            if parts: text = parts[0]
+        else:
+            role_label = msg.role
+            if msg.parts: text = msg.parts[0].text
+        
+        role_icon = "👤" if role_label == "user" else "🤖"
+        
+        # Hide tool triggers from UI
+        if text and not any(x in text for x in ["CALCULATE(", "CALCULATE_MATH(", "LOAD(", "Result:"]):
+            render_message(text, role_label, role_icon)
 
-if prompt := st.chat_input("Ex: Salary 15L, Rent 20k..."):
-    st.chat_message("user", avatar="👤").markdown(prompt)
-    
-    with st.spinner("Processing..."):
-        try:
-            response = send_message_with_retry(st.session_state.chat_session, prompt)
-            text = response.text
-            
-            # --- TOOL 1: MATH SPOT CHECK ---
-            if "CALCULATE_MATH(" in text:
-                expr = text.split("CALCULATE_MATH(")[1][:-1]
-                res = safe_math_eval(expr)
-                st.toast(f"🧮 Computed: {res}", icon="✅")
-                # Force AI to use the result
-                send_message_with_retry(st.session_state.chat_session, f"Math Result: {res}. State this exact number to the user.")
-                text = st.session_state.chat_session.history[-1].parts[0].text
+    if prompt := st.chat_input("Ex: Salary 15L, Rent 20k..."):
+        st.chat_message("user", avatar="👤").markdown(prompt)
+        
+        with st.spinner("Processing..."):
+            try:
+                response = send_message_with_retry(st.session_state.chat_session, prompt)
+                text = response.text
+                
+                # --- TOOL 1: MATH SPOT CHECK ---
+                if "CALCULATE_MATH(" in text:
+                    expr = text.split("CALCULATE_MATH(")[1][:-1]
+                    res = safe_math_eval(expr)
+                    st.toast(f"🧮 Computed: {res}", icon="✅")
+                    send_message_with_retry(st.session_state.chat_session, f"Math Result: {res}. State this exact number to the user.")
+                    text = st.session_state.chat_session.history[-1].parts[0].text
 
-            # --- TOOL 2: LOAD KNOWLEDGE ---
-            if "LOAD(" in text:
-                persona = text.split("LOAD(")[1].split(")")[0]
-                if st.session_state.loaded_persona != persona:
-                    f = inject_knowledge(persona)
-                    if f:
-                        hist = st.session_state.chat_session.history[:-1]
-                        hist.append({"role": "user", "parts": [f, "Context Loaded."]})
-                        hist.append({"role": "model", "parts": ["Context received."]}); 
-                        # Restart with context
-                        model = genai.GenerativeModel('gemini-2.0-flash', system_instruction=sys_instruction_unified)
-                        st.session_state.chat_session = model.start_chat(history=hist)
-                        st.session_state.loaded_persona = persona
-                        st.toast(f"📚 Loaded: {persona}", icon="✅")
-                        send_message_with_retry(st.session_state.chat_session, "Context loaded. Proceed.")
-                        text = st.session_state.chat_session.history[-1].parts[0].text
+                # --- TOOL 2: LOAD KNOWLEDGE ---
+                if "LOAD(" in text:
+                    persona = text.split("LOAD(")[1].split(")")[0]
+                    if st.session_state.loaded_persona != persona:
+                        f = inject_knowledge(persona)
+                        if f:
+                            hist = st.session_state.chat_session.history[:-1]
+                            hist.append({"role": "user", "parts": [f, "Context Loaded."]})
+                            hist.append({"role": "model", "parts": ["Context received."]}); 
+                            model = genai.GenerativeModel('gemini-2.0-flash', system_instruction=sys_instruction_unified)
+                            st.session_state.chat_session = model.start_chat(history=hist)
+                            st.session_state.loaded_persona = persona
+                            st.toast(f"📚 Loaded: {persona}", icon="✅")
+                            send_message_with_retry(st.session_state.chat_session, "Context loaded. Proceed.")
+                            text = st.session_state.chat_session.history[-1].parts[0].text
 
-            # --- TOOL 3: FULL CALCULATOR ---
-            if "CALCULATE(" in text:
-                params = text.split("CALCULATE(")[1].split(")")[0]
-                d = {"age":30, "salary":0, "business":0, "rent":0, "inv80c":0, "med80d":0, "basic":0}
-                for p in params.split(","):
-                    if "=" in p:
-                        k, v = p.split("=")
-                        vc = ''.join(filter(str.isdigit, v))
-                        if vc: d[k.strip()] = int(vc)
-                
-                # Run Python Calc
-                res = calculate_tax_detailed(d['age'], d['salary'], d['business'], d['rent'], d['inv80c'], d['med80d'], d['basic'])
-                tn, to = res['new']['breakdown']['total'], res['old']['breakdown']['total']
-                winner, savings = ("New", to-tn) if tn < to else ("Old", tn-to)
-                
-                # Generate Report
-                report = f"""
-                ### 🧾 Tax Report
-                **Recommendation:** **{winner} Regime** is better. (Save ₹{savings:,})
-                
-                | | **New Regime** | **Old Regime** |
-                | :--- | :--- | :--- |
-                | Taxable Income | ₹{res['new']['net']:,} | ₹{res['old']['net']:,} |
-                | **Total Tax** | **₹{tn:,}** | **₹{to:,}** |
-                
-                ||| 
-                **Detailed Breakdown:**
-                * **Gross Income:** ₹{d['salary']:,}
-                * **HRA Exemption (Old):** ₹{res['old']['deductions']['hra']:,} (Based on Rent: ₹{d['rent']:,})
-                * **Standard Deduction:** ₹75k (New) / ₹50k (Old)
-                """
-                st.chat_message("assistant", avatar="🤖").markdown(report.split("|||")[0])
-                with st.expander("📝 View Details"): st.markdown(report.split("|||")[1])
-                
-                st.session_state.chat_session.history.append({"role": "model", "parts": [f"Result shown: New={tn}, Old={to}"]})
+                # --- TOOL 3: FULL CALCULATOR ---
+                if "CALCULATE(" in text:
+                    params = text.split("CALCULATE(")[1].split(")")[0]
+                    d = {"age":30, "salary":0, "business":0, "rent":0, "inv80c":0, "med80d":0, "basic":0}
+                    for p in params.split(","):
+                        if "=" in p:
+                            k, v = p.split("=")
+                            vc = ''.join(filter(str.isdigit, v))
+                            if vc: d[k.strip()] = int(vc)
+                    
+                    res = calculate_tax_detailed(d['age'], d['salary'], d['business'], d['rent'], d['inv80c'], d['med80d'], d['basic'])
+                    tn, to = res['new']['breakdown']['total'], res['old']['breakdown']['total']
+                    winner, savings = ("New", to-tn) if tn < to else ("Old", tn-to)
+                    
+                    report = f"""
+                    ### 🧾 Tax Report
+                    **Recommendation:** **{winner} Regime** is better. (Save ₹{savings:,})
+                    
+                    | | **New Regime** | **Old Regime** |
+                    | :--- | :--- | :--- |
+                    | Taxable Income | ₹{res['new']['net']:,} | ₹{res['old']['net']:,} |
+                    | **Total Tax** | **₹{tn:,}** | **₹{to:,}** |
+                    
+                    ||| 
+                    **Detailed Breakdown:**
+                    * **Gross Income:** ₹{d['salary']:,}
+                    * **HRA Exemption (Old):** ₹{res['old']['deductions']['hra']:,} (Based on Rent: ₹{d['rent']:,})
+                    * **Standard Deduction:** ₹75k (New) / ₹50k (Old)
+                    """
+                    st.chat_message("assistant", avatar="🤖").markdown(report.split("|||")[0])
+                    with st.expander("📝 View Details"): st.markdown(report.split("|||")[1])
+                    
+                    st.session_state.chat_session.history.append({"role": "model", "parts": [f"Result shown: New={tn}, Old={to}"]})
 
-            # Normal Text Response (if no tool used or after tool)
-            if not any(x in text for x in ["CALCULATE(", "CALCULATE_MATH(", "LOAD("]):
-                render_message(text, "assistant", "🤖")
+                # Normal Text Response
+                if not any(x in text for x in ["CALCULATE(", "CALCULATE_MATH(", "LOAD(", "Result:"]):
+                    render_message(text, "assistant", "🤖")
 
-        except Exception as e: st.error(f"Error: {e}")
+            except Exception as e: st.error(f"Error: {e}")

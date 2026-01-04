@@ -173,16 +173,22 @@ sys_instruction_unified = """
 You are "TaxGuide AI".
 
 **PRIME DIRECTIVE:**
-If the user provides a Salary amount (e.g., "15L", "20k/month"), you **MUST** output the `CALCULATE(...)` tool command IMMEDIATELY.
-**DO NOT** write a text response saying "I have estimated...".
-**DO NOT** explain your assumptions in text.
-**JUST RUN THE TOOL.**
+If the user provides a Salary amount, you **MUST** output the `CALCULATE(...)` tool command IMMEDIATELY.
+
+**OPTIMIZATION PROTOCOL (THE "HELPFUL GUIDE"):**
+After the calculation is done, you will receive a prompt saying "CALCULATION_DONE".
+You MUST then analyze the defaults used (which will be 0) and gently suggest improvements.
+- **Tone:** Helpful, optional, not demanding. Use phrases like "If you have..." or "You could save more by..."
+- **Rent:** "I calculated HRA as 0. Do you pay rent?"
+- **80C:** "I haven't included 80C investments (PF/PPF). You have a limit of ₹1.5L available."
+- **Home Loan:** "Do you have a home loan? Interest is deductible."
+
+**Present these options clearly so the user can just type a number to update.**
 
 **DATA PARSING:**
 - "HRA is 20k" -> `hra_received=20000`
 - "Rent is 20k" -> `rent=20000`
 - "PF is 50k" -> `inv80c=50000`
-- "Home Loan 2L" -> `home_loan=200000`
 
 **OUTPUT FORMAT:**
 CALCULATE(salary=..., rent=..., ...)
@@ -239,7 +245,7 @@ else:
             if msg.parts: text = msg.parts[0].text
         
         role_icon = "👤" if role_label == "user" else "🤖"
-        if text and not any(x in text for x in ["CALCULATE(", "CALCULATE_MATH(", "LOAD(", "Result:"]):
+        if text and not any(x in text for x in ["CALCULATE(", "CALCULATE_MATH(", "LOAD(", "Result:", "CALCULATION_DONE"]):
             render_message(text, role_label, role_icon)
 
     if prompt := st.chat_input("Ex: Salary 15L..."):
@@ -290,13 +296,10 @@ else:
                         d['edu_loan'], d['donations'], d['savings_int'], d['other'], d['basic']
                     )
                     tn, to = res['new']['breakdown']['total'], res['old']['breakdown']['total']
-                    
-                    winner = "New Regime" if tn < to else "Old Regime"
-                    savings = abs(tn - to)
+                    winner, savings = ("New", to-tn) if tn < to else ("Old", tn-to)
 
                     with st.chat_message("assistant", avatar="🤖"):
                         st.subheader("📊 Tax Analysis")
-                        
                         c1, c2, c3 = st.columns(3)
                         c1.metric("New Regime Tax", f"₹{tn:,}")
                         c2.metric("Old Regime Tax", f"₹{to:,}")
@@ -309,42 +312,19 @@ else:
 
                         st.markdown("### 🧾 Detailed Breakdown")
                         
-                        other_total = (res['old']['deductions']['80e'] + 
-                                       res['old']['deductions']['80g'] + 
-                                       res['old']['deductions']['80tta'] + 
-                                       res['old']['deductions']['other'])
-
+                        other_total = (res['old']['deductions']['80e'] + res['old']['deductions']['80g'] + res['old']['deductions']['80tta'] + res['old']['deductions']['other'])
                         table_data = {
                             "Item": ["Gross Salary", "HRA Exemption ", "Standard Deduction", "80C (PF/LIC/PPF) ", "NPS (80CCD) ", "Home Loan Interest ", "Health Ins (80D)", "Other (Edu/Donations/Int)", "Taxable Income", "Net Tax Payable"],
-                            "New Regime": [
-                                f"₹{d['salary']:,}", "₹0", "₹75,000", "₹0", "₹0", "₹0", "₹0", "₹0",
-                                f"₹{res['new']['net']:,}", f"₹{tn:,}"
-                            ],
-                            "Old Regime": [
-                                f"₹{d['salary']:,}", 
-                                f"₹{res['old']['deductions']['hra']:,}", 
-                                "₹50,000", 
-                                f"₹{res['old']['deductions']['80c']:,}", 
-                                f"₹{res['old']['deductions']['nps']:,}", 
-                                f"₹{res['old']['deductions']['home_loan']:,}", 
-                                f"₹{res['old']['deductions']['med80d']:,}", 
-                                f"₹{other_total:,}",
-                                f"₹{res['old']['net']:,}", 
-                                f"₹{to:,}"
-                            ]
+                            "New Regime": [f"₹{d['salary']:,}", "₹0", "₹75,000", "₹0", "₹0", "₹0", "₹0", "₹0", f"₹{res['new']['net']:,}", f"₹{tn:,}"],
+                            "Old Regime": [f"₹{d['salary']:,}", f"₹{res['old']['deductions']['hra']:,}", "₹50,000", f"₹{res['old']['deductions']['80c']:,}", f"₹{res['old']['deductions']['nps']:,}", f"₹{res['old']['deductions']['home_loan']:,}", f"₹{res['old']['deductions']['med80d']:,}", f"₹{other_total:,}", f"₹{res['old']['net']:,}", f"₹{to:,}"]
                         }
                         st.table(table_data)
-                        
-                        assumptions = []
-                        if d['rent'] == 0: assumptions.append("Rent: ₹0")
-                        if d['inv80c'] == 0: assumptions.append("80C: ₹0")
-                        
-                        if assumptions:
-                            st.caption(f"⚠️ **Assumed 0 for:** {', '.join(assumptions)}")
-                        
-                        st.caption(f"*Calculated based on Basic: ₹{res['old']['assumptions']['basic']:,}*")
-
+                    
                     st.session_state.chat_session.history.append({"role": "model", "parts": [f"Result shown: New={tn}, Old={to}"]})
+
+                    # --- TRIGGER "HELPFUL" NUDGE ---
+                    audit_response = send_message_with_retry(st.session_state.chat_session, "CALCULATION_DONE. Suggest optimizations (Rent, 80C, Home Loan) politely if missing, but do not force.")
+                    render_message(audit_response.text, "assistant", "🤖")
 
                 if not any(x in text for x in ["CALCULATE(", "CALCULATE_MATH(", "LOAD(", "Result:"]):
                     render_message(text, "assistant", "🤖")

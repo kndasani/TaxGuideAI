@@ -74,32 +74,60 @@ def calculate_hra_exemption(basic_annual, rent_annual, metro=True):
     cond3 = (0.50 if metro else 0.40) * basic_annual
     return int(max(0, min(cond2, cond3)))
 
-def calculate_tax_detailed(age, salary, business_income, rent_paid, inv_80c, med_80d, custom_basic=0):
+def calculate_tax_detailed(age, salary, business_income, rent_paid, inv_80c, med_80d, home_loan, nps, edu_loan, donations, savings_int, other_deductions, custom_basic=0):
     std_deduction_new = 75000; std_deduction_old = 50000
     
-    # 1. Basic Salary Logic
-    # If custom_basic is provided (e.g. user said "Basic is 4L"), use it.
-    # If custom_basic is 0 OR it seems too small to be annual (e.g. 40 means 40%), assume percentage.
+    # 1. Basic Salary
     basic = 0
     if custom_basic > 0:
-        if custom_basic < 100: # User said "40%"
-             basic = salary * (custom_basic / 100.0)
-        else:
-             basic = custom_basic
+        if custom_basic < 100: basic = salary * (custom_basic / 100.0)
+        else: basic = custom_basic
     else:
-        basic = salary * 0.50 # Default 50%
+        basic = salary * 0.50 
 
     # 2. Rent Logic
     final_rent = rent_paid
     if rent_paid > 0 and rent_paid < (salary * 0.15):
-        final_rent = rent_paid * 12 # Assume Monthly
+        final_rent = rent_paid * 12 
 
     hra_exemption = calculate_hra_exemption(basic, final_rent)
     
+    # 3. Expanded Deductions Logic (The "Official Calculator" sections)
+    
+    # 80TTA/TTB: Savings Interest (Max 10k normally, 50k for Seniors)
+    limit_80tta = 50000 if age >= 60 else 10000
+    deduction_80tta = min(savings_int, limit_80tta)
+    
+    # 80E: Education Loan Interest (100% Deductible for 8 years)
+    deduction_80e = edu_loan
+    
+    # 80G: Donations (Pass-through: assuming user gives eligible amount)
+    deduction_80g = donations
+    
+    # 24b: Home Loan Interest
+    deduction_home_loan = min(home_loan, 200000)
+    
+    # 80CCD(1B): NPS
+    deduction_nps = min(nps, 50000)
+
+    # 4. Income Computation
     taxable_business = business_income * 0.50
     gross = salary + taxable_business
     
-    deductions_old = std_deduction_old + hra_exemption + min(inv_80c, 150000) + med_80d
+    # Total Old Regime Deductions
+    deductions_old = (
+        std_deduction_old + 
+        hra_exemption + 
+        min(inv_80c, 150000) + 
+        med_80d + 
+        deduction_home_loan + 
+        deduction_nps +
+        deduction_80e +
+        deduction_80g +
+        deduction_80tta +
+        other_deductions
+    )
+    
     net_old = max(0, gross - deductions_old)
     net_new = max(0, gross - std_deduction_new)
 
@@ -108,7 +136,23 @@ def calculate_tax_detailed(age, salary, business_income, rent_paid, inv_80c, med
     
     return {
         "new": {"breakdown": bd_new, "net": net_new},
-        "old": {"breakdown": bd_old, "net": net_old, "deductions": {"std": std_deduction_old, "hra": hra_exemption, "80c": min(inv_80c, 150000), "80d": med_80d}, "assumptions": {"basic": basic, "rent_annual": final_rent}}
+        "old": {
+            "breakdown": bd_old, 
+            "net": net_old, 
+            "deductions": {
+                "std": std_deduction_old, 
+                "hra": hra_exemption, 
+                "80c": min(inv_80c, 150000), 
+                "80d": med_80d,
+                "home_loan": deduction_home_loan,
+                "nps": deduction_nps,
+                "80e": deduction_80e,
+                "80g": deduction_80g,
+                "80tta": deduction_80tta,
+                "other": other_deductions
+            }, 
+            "assumptions": {"basic": basic, "rent_annual": final_rent}
+        }
     }
 
 def compute_tax_breakdown(income, age, regime):
@@ -144,27 +188,29 @@ sys_instruction_unified = """
 You are "TaxGuide AI".
 
 **PRIME DIRECTIVE:**
-1. **Identify Data:** Look for "Salary", "Rent", "Investments" in user text.
-2. **Missing Salary?** -> ASK NICELY: "To start, could you tell me your Annual Salary?"
-3. **Have Salary?** -> **CALCULATE IMMEDIATELY**.
-   - **ASSUME** defaults (Age=30, Basic=50%, Rent=Monthly) if not specified.
-   - Use `CALCULATE(...)` tool.
-
-**REFINEMENT PROTOCOL:**
-If the user corrects an assumption (e.g., "My Basic is actually 40%"):
-1. **RETAIN** the previous values for Salary/Rent.
-2. **UPDATE** only the corrected value (Basic).
-3. **RE-CALCULATE** immediately using the new set of parameters.
+1. **Estimate Immediately:** If you have Salary, calculate tax instantly using defaults.
+2. **Walkthrough (Progressive Disclosure):** AFTER the first estimate, proactively ask:
+   *"Do you have Education Loans (80E), Donations (80G), Savings Interest (80TTA), or other deductions?"*
+3. **Handle Monthly:** Multiply monthly figures by 12 internally.
 
 **TOOL SELECTION:**
 - **User asks "Calculate Tax" (with Salary)** -> `CALCULATE(...)`
-- **User asks "What is my HRA?" (Specific)** -> `CALCULATE_MATH(...)`
-- **User asks "Explain 80C"** -> LOAD(salary_rules.pdf)
+- **User provides "Education Loan Interest 50k"** -> `CALCULATE(..., edu_loan=50000)`
+- **User asks "What is my HRA?"** -> `CALCULATE_MATH(...)`
+
+**DEDUCTION DICTIONARY:**
+When extracting data, map to these keys:
+- `home_loan` (Section 24b)
+- `nps` (Section 80CCD 1B)
+- `edu_loan` (Section 80E)
+- `donations` (Section 80G)
+- `savings_int` (Section 80TTA/TTB)
+- `other` (Any other deduction amount)
 
 **OUTPUT FORMAT:**
-[Summary Answer]
+[Summary]
 |||
-[Technical Details with Assumptions Used]
+[Technical Details]
 """
 
 # --- 6. UI SETUP ---
@@ -261,8 +307,9 @@ else:
 
                 # --- TOOL 3: FULL CALCULATOR ---
                 if "CALCULATE(" in text:
+                    # EXTENDED PARSING
                     params = text.split("CALCULATE(")[1].split(")")[0]
-                    d = {"age":30, "salary":0, "business":0, "rent":0, "inv80c":0, "med80d":0, "basic":0}
+                    d = {"age":30, "salary":0, "business":0, "rent":0, "inv80c":0, "med80d":0, "basic":0, "home_loan":0, "nps":0, "edu_loan":0, "donations":0, "savings_int":0, "other":0}
                     for p in params.split(","):
                         if "=" in p:
                             k, v = p.split("=")
@@ -270,13 +317,15 @@ else:
                             if vc: d[k.strip()] = int(vc)
                     
                     # RUN CALCULATION
-                    res = calculate_tax_detailed(d['age'], d['salary'], d['business'], d['rent'], d['inv80c'], d['med80d'], d['basic'])
+                    res = calculate_tax_detailed(
+                        d['age'], d['salary'], d['business'], d['rent'], 
+                        d['inv80c'], d['med80d'], d['home_loan'], d['nps'],
+                        d['edu_loan'], d['donations'], d['savings_int'], d['other'], d['basic']
+                    )
                     tn, to = res['new']['breakdown']['total'], res['old']['breakdown']['total']
                     winner, savings = ("New", to-tn) if tn < to else ("Old", tn-to)
                     
-                    # Retrieve Assumptions used by Python
                     used_basic = res['old']['assumptions']['basic']
-                    used_rent = res['old']['assumptions']['rent_annual']
                     
                     report = f"""
                     ### 🧾 Tax Estimate
@@ -288,11 +337,18 @@ else:
                     | **Total Tax** | **₹{tn:,}** | **₹{to:,}** |
                     
                     ||| 
-                    **Defaults & Assumptions Used:**
-                    * **Basic Salary:** ₹{used_basic:,}
+                    **Breakdown of Old Regime Deductions:**
+                    * **Standard Deduction:** ₹50,000
+                    * **80C (PF/LIC):** ₹{res['old']['deductions']['80c']:,} 
                     * **HRA Exemption:** ₹{res['old']['deductions']['hra']:,} 
-                    * **Annual Rent Considered:** ₹{used_rent:,}
-                    * **Standard Deduction:** ₹75k (New) / ₹50k (Old)
+                    * **Home Loan (Sec 24b):** ₹{res['old']['deductions']['home_loan']:,}
+                    * **NPS (80CCD 1B):** ₹{res['old']['deductions']['nps']:,}
+                    * **Edu Loan (80E):** ₹{res['old']['deductions']['80e']:,}
+                    * **Donations (80G):** ₹{res['old']['deductions']['80g']:,}
+                    * **Savings Int (80TTA):** ₹{res['old']['deductions']['80tta']:,}
+                    * **Other:** ₹{res['old']['deductions']['other']:,}
+                    
+                    *Assumed Basic Salary: ₹{used_basic:,}*
                     """
                     st.chat_message("assistant", avatar="🤖").markdown(report.split("|||")[0])
                     with st.expander("📝 View Details & Assumptions"): st.markdown(report.split("|||")[1])

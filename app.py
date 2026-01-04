@@ -2,7 +2,7 @@ import streamlit as st
 import google.generativeai as genai
 import os
 import time
-import re
+import math
 from dotenv import load_dotenv
 
 # --- 1. CONFIGURATION ---
@@ -47,23 +47,49 @@ def inject_knowledge(persona_type):
     return None
 
 # --- 4. CALCULATOR ENGINE ---
+
+# Core 1: The Robust Math Engine
 def safe_math_eval(expression):
     try:
-        expression = expression.replace(",", "").replace("%", "*0.01").replace("^", "**")
-        allowed_chars = set("0123456789+-*/(). abdimnorsux")
+        # 1. Cleaning & Normalization
+        expression = expression.lower() 
+        expression = expression.replace(",", "")       # "1,00,000" -> "100000"
+        expression = expression.replace("%", "*0.01")  # "10%" -> "10*0.01"
+        expression = expression.replace("^", "**")     # "10^2" -> "10**2"
+        expression = expression.replace("₹", "")       # Remove currency symbols
+        
+        # 2. Whitelist Validation
+        # Allowed: digits, operators, parens, dot, space
+        # Allowed letters for functions: a,b,c,d,e,f,h,i,l,m,n,o,p,r,s,t,u,w,x
+        # Covers: min, max, abs, round, int, float, pow, ceil, floor
+        allowed_chars = set("0123456789+-*/(). abcdefhilmnorstuwx")
+        
         if not set(expression).issubset(allowed_chars):
             return "Error: Unsafe characters."
-        safe_dict = {"min": min, "max": max, "abs": abs, "round": round}
+
+        # 3. Safe Evaluation
+        safe_dict = {
+            "min": min, "max": max, "abs": abs, "round": round,
+            "int": int, "float": float, "pow": pow,
+            "ceil": math.ceil, "floor": math.floor
+        }
+        
         result = eval(expression, {"__builtins__": None}, safe_dict)
+        
+        # 4. Formatting
         if isinstance(result, (int, float)):
             return f"{int(result):,}"
         return str(result)
     except Exception as e:
-        return f"Error: {e}"
+        return f"Error ({e})"
 
+# Core 2: The Full Regime Calculator
 def calculate_tax_detailed(age, salary, business_income, rent_paid, inv_80c, med_80d, custom_basic=0):
     std_deduction_new = 75000; std_deduction_old = 50000
+    
+    # Flexible Basic: If unknown, assume 50%
     basic = custom_basic if custom_basic > 0 else (salary * 0.50)
+    
     taxable_business = business_income * 0.50
     hra_exemption = max(0, rent_paid * 12 - (0.10 * basic))
     
@@ -112,7 +138,7 @@ def compute_tax_breakdown(income, age, regime):
 
 # --- 5. THE TWO BRAINS ---
 
-# Brain A: Calculator (Fast)
+# Brain A: Calculator (Aggressive/Fast)
 sys_instruction_calc = """
 You are "TaxGuide AI". 
 **Goal:** Estimate Tax IMMEDIATELY.
@@ -121,22 +147,27 @@ You are "TaxGuide AI".
 1. Assume Age=30, Rent=0, Deductions=0, Basic=50%.
 2. Output `CALCULATE(...)` instantly.
 3. Post-calculation, ask if they want to refine.
+
+**MEMORY:** Remember user data.
 """
 
-# Brain B: The Professor (PROACTIVE)
+# Brain B: The Professor (Proactive & Smart)
 sys_instruction_rules = """
 You are "TaxGuide AI".
 **Goal:** Answer user questions accurately using Python.
 
 **AUTO-TRIGGER RULE (CRITICAL):**
-If the user provides numbers (e.g., "Salary 15L, Rent 20k, Location Mumbai"):
+If the user provides numbers (e.g., "Salary 15L, Rent 20k"):
 1. **DO NOT JUST ACKNOWLEDGE.**
 2. Assume they want to know the HRA Exemption or Tax Impact.
 3. Immediately form the formula and output `CALCULATE_MATH(...)`.
 
 **MISSING DATA RULE:**
-- If Basic Salary is missing: Use 50% of Total Salary.
-- If Monthly figures given: Convert to Annual inside the formula.
+- If Basic Salary is missing: **Silently use 50% of Total Salary.** Do NOT ask for it.
+- If Monthly figures given: Convert to Annual inside the formula (x12).
+
+**SINGLE TRUTH:**
+You MUST copy the result provided by Python exactly.
 
 **OUTPUT FORMAT:**
 [Main Answer] ||| [Technical Details]
@@ -214,16 +245,21 @@ else:
                 response = send_message_with_retry(st.session_state.chat_session, prompt)
                 text = response.text
                 
+                # --- TOOL: MATH (Robust) ---
                 if "CALCULATE_MATH(" in text:
                     try:
                         expression = text.split("CALCULATE_MATH(")[1][:-1]
                         result = safe_math_eval(expression)
                         st.toast(f"🧮 Computed: {result}", icon="✅")
-                        instruction = f"The result is {result}. You MUST state: 'The calculated HRA exemption is ₹{result}.' in the Main Answer section."
+                        
+                        # INJECT CONSISTENCY PROMPT
+                        instruction = f"The result is {result}. You MUST state: 'The calculated amount is ₹{result}.' in the Main Answer section."
                         response = send_message_with_retry(st.session_state.chat_session, instruction)
                         text = response.text
+                        
                     except Exception as e: st.error(f"Math Tool Error: {e}")
 
+                # --- TOOL: HANDOVER ---
                 if "SWITCH_TO_CALC" in text:
                     st.session_state.mode = "CALC"
                     current_hist = st.session_state.chat_session.history[:-1]
@@ -234,6 +270,7 @@ else:
                     response = send_message_with_retry(st.session_state.chat_session, "User wants to calculate. Acknowledge and start Interview.")
                     text = response.text
 
+                # --- TOOL: LOAD PDF ---
                 if "LOAD(" in text:
                     persona = text.split("LOAD(")[1].split(")")[0]
                     if st.session_state.loaded_persona != persona:
@@ -252,6 +289,7 @@ else:
                             response = send_message_with_retry(st.session_state.chat_session, next_msg)
                             text = response.text
 
+                # --- TOOL: FULL CALCULATOR ---
                 if "CALCULATE(" in text:
                     try:
                         params = text.split("CALCULATE(")[1].split(")")[0]

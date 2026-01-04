@@ -98,12 +98,12 @@ def compute_tax_breakdown(income, age, regime):
     total = int(tax + surcharge + cess)
     return {"base": int(tax), "surcharge": int(surcharge), "cess": int(cess), "total": total}
 
-# --- 5. THE TWO BRAINS (Optimized for Memory & Brevity) ---
+# --- 5. THE TWO BRAINS (Re-Calibrated) ---
 
 # Brain A: Calculator (Interviewer)
 sys_instruction_calc = """
 You are "TaxGuide AI". 
-**Goal:** Interview the user. Be concise.
+**Goal:** Interview the user. Be concise but clear.
 
 **MEMORY RULE:** If the user states a number (e.g., "I earn 1 Lakh/month"), **REMEMBER IT**.
 If later you ask for a breakdown (Basic/HRA) and they say "I don't know":
@@ -121,24 +121,32 @@ If later you ask for a breakdown (Basic/HRA) and they say "I don't know":
 4. **CALCULATE:** Output `CALCULATE(...)` with basic=0 if estimated.
 """
 
-# Brain B: The Professor (Concise + Splitter)
+# Brain B: The Professor (Comprehensive & Helpful)
 sys_instruction_rules = """
 You are "TaxGuide AI".
-**Goal:** Answer questions briefly. Use "Read More" for details.
+**Goal:** Answer user questions comprehensively. Do NOT send them to external websites.
 
-**OUTPUT FORMAT RULE (CRITICAL):**
-For every answer, structure it exactly like this:
-[Direct Answer in 1-2 sentences]
+**OUTPUT FORMAT RULE:**
+Structure your answer like this:
+[Main Answer: Definition + Context + Key Numbers]
 |||
-[Detailed Explanation, Calculations, or Rules]
+[Technical Details: Formulas, Section Numbers, Deep Dive]
 
-**MEMORY RULE:**
-If the user mentioned a salary (e.g., "My salary is 1.5 Lakhs PM"), **USE IT** for your examples. Do not assume a random "10 Lakhs" if the user gave you a number.
+**GUIDELINES:**
+1. **NO External Links:** Explain the concept right here.
+2. **Intent Awareness:**
+   - If asked "What is HRA?", explain it is an allowance for rent that reduces tax. Mention who gets it (salaried).
+   - If asked "How is HRA calculated?", explain the 3 conditions simply.
+3. **Spot Calculations:**
+   - If asked "How much does 50k in 80C save?", show the final number (e.g., "₹15,600") in the *Main Answer* section.
+   - Put the calculation steps (e.g., 50000 * 30% + cess) in the *Details* section (after |||).
+
+**MEMORY RULE:** Use the user's stated salary for any examples.
 
 **LOGIC:**
 1. **DETECT CONTEXT & LOAD:** (Salary/Business -> LOAD)
-2. **ANSWER:** Use the `|||` separator.
-3. **DIAGRAMS:** Add tags like  in the Details section only.
+2. **ANSWER:** Use the `|||` separator. Put the helpful summary FIRST.
+3. **DIAGRAMS:** Add tags like  in the Details section.
 4. **SWITCH:** Output `SWITCH_TO_CALC` only if explicitly asked to calculate total tax.
 """
 
@@ -150,7 +158,7 @@ with col2:
         st.session_state.clear()
         st.rerun()
 
-# --- 7. HELPER: MESSAGE RENDERER (The UI Splitter) ---
+# --- 7. HELPER: MESSAGE RENDERER ---
 def render_message(text, role, avatar):
     """Parses text for ||| separator and renders accordion"""
     with st.chat_message(role, avatar=avatar):
@@ -201,7 +209,6 @@ else:
         if text and "LOAD" not in text and "Result:" not in text and "SWITCH_TO_CALC" not in text:
             role_name = "user" if role == "user" else "assistant"
             avatar = "👤" if role == "user" else "🤖"
-            # Use the new Renderer
             render_message(text, role_name, avatar)
 
     if prompt := st.chat_input("Type here..."):
@@ -292,7 +299,6 @@ else:
 
                 else:
                     if "LOAD(" not in text and "SWITCH_TO_CALC" not in text:
-                        # Use the new Renderer
                         render_message(text, "assistant", "🤖")
 
             except Exception as e: st.error(f"Error: {e}")

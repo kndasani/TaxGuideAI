@@ -49,18 +49,14 @@ def inject_knowledge(persona_type):
 
 # --- 4. CALCULATOR ENGINE ---
 
-# Core 1: The Robust Math Engine (Patched for Labels)
+# Core 1: The Robust Math Engine (Parenthesis Balancer)
 def safe_math_eval(expression):
     try:
         # 1. Strip Labels & Assignments
-        # If AI sends "Salary: 5000", take "5000"
-        if ":" in expression:
-            expression = expression.split(":")[-1]
-        # If AI sends "x = 5000", take "5000"
-        if "=" in expression:
-            expression = expression.split("=")[-1]
+        if ":" in expression: expression = expression.split(":")[-1]
+        if "=" in expression: expression = expression.split("=")[-1]
 
-        # 2. Cleaning
+        # 2. Cleaning & Normalization
         expression = expression.lower().strip()
         expression = expression.replace("\n", " ").replace("\t", " ") 
         expression = expression.replace("`", "")       
@@ -68,18 +64,29 @@ def safe_math_eval(expression):
         expression = expression.replace("%", "*0.01")  
         expression = expression.replace("^", "**")     
         
-        # 3. Smart Comma Handling
-        # Remove commas inside numbers (e.g., 1,00,000 -> 100000)
+        # 3. Parenthesis Balancing (The Fix)
+        open_count = expression.count('(')
+        close_count = expression.count(')')
+        if open_count > close_count:
+            expression += ')' * (open_count - close_count)
+        elif close_count > open_count:
+            # remove extra closing parens from the end
+            expression = expression.rstrip(')') 
+            # If still unbalanced, just try to strip from right until valid or empty
+            while expression.count(')') > expression.count('('):
+                 expression = expression[::-1].replace(')', '', 1)[::-1]
+
+        # 4. Smart Comma Handling
         expression = re.sub(r'(\d),(\d)', r'\1\2', expression)
         
-        # 4. Whitelist Validation
+        # 5. Whitelist Validation
         allowed_chars = set("0123456789+-*/()., <>=abcdefhilmnorstuwx")
         
         if not set(expression).issubset(allowed_chars):
             bad_chars = set(expression) - allowed_chars
             return f"Error: Unsafe characters found: {bad_chars}"
 
-        # 5. Safe Evaluation
+        # 6. Safe Evaluation
         safe_dict = {
             "min": min, "max": max, "abs": abs, "round": round,
             "int": int, "float": float, "pow": pow,
@@ -88,6 +95,7 @@ def safe_math_eval(expression):
         
         result = eval(expression, {"__builtins__": None}, safe_dict)
         
+        # 7. Formatting
         if isinstance(result, (int, float)):
             return f"{int(result):,}"
         return str(result)

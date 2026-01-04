@@ -45,18 +45,14 @@ def inject_knowledge(persona_type):
     elif persona_type == "CAPITAL_GAINS": return get_pdf_file("capital_gains.pdf")
     return None
 
-# --- 4. CALCULATOR ENGINE (Updated for Flexible Basic) ---
+# --- 4. CALCULATOR ENGINE ---
 def calculate_tax_detailed(age, salary, business_income, rent_paid, inv_80c, med_80d, custom_basic=0):
     std_deduction_new = 75000; std_deduction_old = 50000
     
     # Flexible Basic Salary Logic
-    # If user provided a specific Basic, use it. Otherwise default to 50% of Salary.
     basic = custom_basic if custom_basic > 0 else (salary * 0.50)
     
     taxable_business = business_income * 0.50
-    
-    # HRA Logic: Min(Rent - 10% Basic, 50% Basic, Actual HRA limit - ignored for simplicity)
-    # We assume 'rent_paid' is the exemption claimable if HRA component exists
     hra_exemption = max(0, rent_paid * 12 - (0.10 * basic))
     
     gross = salary + taxable_business
@@ -102,43 +98,48 @@ def compute_tax_breakdown(income, age, regime):
     total = int(tax + surcharge + cess)
     return {"base": int(tax), "surcharge": int(surcharge), "cess": int(cess), "total": total}
 
-# --- 5. THE TWO BRAINS (Enhanced) ---
+# --- 5. THE TWO BRAINS (Optimized for Memory & Brevity) ---
 
-# Brain A: The Calculator (Smart Estimator)
+# Brain A: Calculator (Interviewer)
 sys_instruction_calc = """
 You are "TaxGuide AI". 
-**Goal:** Interview the user. Be helpful if they don't know exact figures.
+**Goal:** Interview the user. Be concise.
+
+**MEMORY RULE:** If the user states a number (e.g., "I earn 1 Lakh/month"), **REMEMBER IT**.
+If later you ask for a breakdown (Basic/HRA) and they say "I don't know":
+1. Do NOT invent a new salary.
+2. Use the previously stated total salary to estimate.
+3. Assume Basic = 50% of the *User's Stated Salary*.
 
 **LOGIC FLOW:**
 1. **START:** Ask: "How do you earn your living?"
 2. **DETECT & LOAD:** (Salary/Business -> LOAD)
-3. **THE INTERVIEW:**
-   - **Age & Income:** Ask standard questions.
-   - **Basic Salary Check (CRITICAL):** - "Do you know your 'Basic Salary' component? It's usually 40-50% of your Gross."
-     - **If User says 'No' or 'Not sure':** Say "No problem! I can use the standard industry estimate (50% of Gross) to calculate your HRA."
-     - **If User asks where to find it:** Suggest checking their Payslip or Offer Letter.
-   - **Deductions:** Ask about Rent, 80C (PF/LIC), 80D.
-4. **CALCULATE:**
-   - Output: `CALCULATE(age=..., salary=..., business=..., rent=..., inv80c=..., med80d=..., basic=...)`
-   - *Note: Send basic=0 if using the default estimate.*
+3. **INTERVIEW:**
+   - Ask Age & Income (if not already known).
+   - Ask about Basic Salary. If unknown, say: "I'll estimate Basic as 50% of your ₹[Amount] salary."
+   - Ask Deductions (Rent, 80C, 80D).
+4. **CALCULATE:** Output `CALCULATE(...)` with basic=0 if estimated.
 """
 
-# Brain B: The Professor (Impact Analyzer)
+# Brain B: The Professor (Concise + Splitter)
 sys_instruction_rules = """
 You are "TaxGuide AI".
-**Goal:** Answer questions and perform "Spot Checks".
+**Goal:** Answer questions briefly. Use "Read More" for details.
 
-**STRICT RULES:**
-1. **Do NOT run full calculations.**
-2. **ALLOW Spot Checks:** If a user asks "How much tax does 50k in 80C save?", do **NOT** switch to calculator.
-   - Answer conceptually: "In the Old Regime, if you fall in the 30% slab, investing ₹50,000 saves you roughly ₹15,600 (Tax + Cess)."
-   - Use general slab examples (20%, 30%) to illustrate.
+**OUTPUT FORMAT RULE (CRITICAL):**
+For every answer, structure it exactly like this:
+[Direct Answer in 1-2 sentences]
+|||
+[Detailed Explanation, Calculations, or Rules]
 
-**LOGIC FLOW:**
+**MEMORY RULE:**
+If the user mentioned a salary (e.g., "My salary is 1.5 Lakhs PM"), **USE IT** for your examples. Do not assume a random "10 Lakhs" if the user gave you a number.
+
+**LOGIC:**
 1. **DETECT CONTEXT & LOAD:** (Salary/Business -> LOAD)
-2. **ANSWER:** Explain the rule.
-3. **DIAGRAMS:** If explaining Salary components (Basic/HRA/DA), look for visual opportunities.
-4. **SWITCH:** Only if user says "Calculate my TOTAL tax liability", output `SWITCH_TO_CALC`.
+2. **ANSWER:** Use the `|||` separator.
+3. **DIAGRAMS:** Add tags like  in the Details section only.
+4. **SWITCH:** Output `SWITCH_TO_CALC` only if explicitly asked to calculate total tax.
 """
 
 # --- 6. UI HEADER ---
@@ -149,7 +150,19 @@ with col2:
         st.session_state.clear()
         st.rerun()
 
-# --- 7. FORK LOGIC ---
+# --- 7. HELPER: MESSAGE RENDERER (The UI Splitter) ---
+def render_message(text, role, avatar):
+    """Parses text for ||| separator and renders accordion"""
+    with st.chat_message(role, avatar=avatar):
+        if "|||" in text:
+            summary, details = text.split("|||", 1)
+            st.markdown(summary.strip())
+            with st.expander("📝 Read Detailed Explanation"):
+                st.markdown(details.strip())
+        else:
+            st.markdown(text)
+
+# --- 8. FORK LOGIC ---
 if "mode" not in st.session_state:
     st.session_state.mode = None
     st.session_state.chat_session = None
@@ -171,11 +184,12 @@ if st.session_state.mode is None:
             st.session_state.mode = "RULES"
             model = genai.GenerativeModel('gemini-2.0-flash', system_instruction=sys_instruction_rules)
             st.session_state.chat_session = model.start_chat(history=[])
-            st.session_state.chat_session.history.append({"role": "model", "parts": ["I can explain tax rules or estimating savings on specific investments. What's your question?"]})
+            st.session_state.chat_session.history.append({"role": "model", "parts": ["I can explain rules or do quick spot-checks. What's your question?"]})
             st.rerun()
 
 # SCREEN 2: CHAT
 else:
+    # History
     for msg in st.session_state.chat_session.history:
         text, role = "", ""
         if isinstance(msg, dict):
@@ -187,8 +201,8 @@ else:
         if text and "LOAD" not in text and "Result:" not in text and "SWITCH_TO_CALC" not in text:
             role_name = "user" if role == "user" else "assistant"
             avatar = "👤" if role == "user" else "🤖"
-            with st.chat_message(role_name, avatar=avatar):
-                st.markdown(text)
+            # Use the new Renderer
+            render_message(text, role_name, avatar)
 
     if prompt := st.chat_input("Type here..."):
         st.chat_message("user", avatar="👤").markdown(prompt)
@@ -198,7 +212,6 @@ else:
                 response = send_message_with_retry(st.session_state.chat_session, prompt)
                 text = response.text
                 
-                # --- LOGIC 1: HANDOVER ---
                 if "SWITCH_TO_CALC" in text:
                     st.session_state.mode = "CALC"
                     current_hist = st.session_state.chat_session.history[:-1]
@@ -209,7 +222,6 @@ else:
                     response = send_message_with_retry(st.session_state.chat_session, "User wants to calculate. Acknowledge and start Interview.")
                     text = response.text
 
-                # --- LOGIC 2: LOAD PDF ---
                 if "LOAD(" in text:
                     persona = text.split("LOAD(")[1].split(")")[0]
                     if st.session_state.loaded_persona != persona:
@@ -228,7 +240,6 @@ else:
                             response = send_message_with_retry(st.session_state.chat_session, next_msg)
                             text = response.text
 
-                # --- LOGIC 3: CALCULATE ---
                 if "CALCULATE(" in text:
                     try:
                         params = text.split("CALCULATE(")[1].split(")")[0]
@@ -239,11 +250,10 @@ else:
                                 vc = ''.join(filter(str.isdigit, v.strip()))
                                 if vc: data[k.strip()] = int(vc)
                         
-                        # Use the new Flexible Engine
                         res = calculate_tax_detailed(
                             data['age'], data['salary'], data['business'], 
                             data['rent'], data['inv80c'], data['med80d'],
-                            custom_basic=data['basic'] # Pass the new parameter
+                            custom_basic=data['basic']
                         )
                         
                         tn = res['new']['breakdown']['total']
@@ -282,6 +292,7 @@ else:
 
                 else:
                     if "LOAD(" not in text and "SWITCH_TO_CALC" not in text:
-                        st.chat_message("assistant", avatar="🤖").markdown(text)
+                        # Use the new Renderer
+                        render_message(text, "assistant", "🤖")
 
             except Exception as e: st.error(f"Error: {e}")

@@ -49,14 +49,19 @@ def inject_knowledge(persona_type):
 
 # --- 4. CALCULATOR ENGINE ---
 
-# Core 1: The Robust Math Engine (Patched for Variables & Comments)
+# Core 1: The Robust Math Engine (Patched for Labels)
 def safe_math_eval(expression):
     try:
-        # 1. Strip Comments (The # character)
-        expression = expression.split('#')[0]
-        
-        # 2. Cleaning & Normalization
-        expression = expression.lower()
+        # 1. Strip Labels & Assignments
+        # If AI sends "Salary: 5000", take "5000"
+        if ":" in expression:
+            expression = expression.split(":")[-1]
+        # If AI sends "x = 5000", take "5000"
+        if "=" in expression:
+            expression = expression.split("=")[-1]
+
+        # 2. Cleaning
+        expression = expression.lower().strip()
         expression = expression.replace("\n", " ").replace("\t", " ") 
         expression = expression.replace("`", "")       
         expression = expression.replace("₹", "")       
@@ -64,11 +69,11 @@ def safe_math_eval(expression):
         expression = expression.replace("^", "**")     
         
         # 3. Smart Comma Handling
+        # Remove commas inside numbers (e.g., 1,00,000 -> 100000)
         expression = re.sub(r'(\d),(\d)', r'\1\2', expression)
         
         # 4. Whitelist Validation
-        # Added 'p' (for pow), '_' (for numbers like 10_000)
-        allowed_chars = set("0123456789+-*/()., <>=_abcdefhilmnoprstuwx")
+        allowed_chars = set("0123456789+-*/()., <>=abcdefhilmnorstuwx")
         
         if not set(expression).issubset(allowed_chars):
             bad_chars = set(expression) - allowed_chars
@@ -83,7 +88,6 @@ def safe_math_eval(expression):
         
         result = eval(expression, {"__builtins__": None}, safe_dict)
         
-        # 6. Formatting
         if isinstance(result, (int, float)):
             return f"{int(result):,}"
         return str(result)
@@ -158,7 +162,7 @@ You are "TaxGuide AI".
 **MEMORY:** Remember user data.
 """
 
-# Brain B: The Professor (STRICT NUMBERS ONLY)
+# Brain B: The Professor (Anti-Label)
 sys_instruction_rules = """
 You are "TaxGuide AI".
 **Goal:** Answer user questions accurately using Python.
@@ -167,11 +171,11 @@ You are "TaxGuide AI".
 Use `CALCULATE_MATH(expression)` for all spot checks.
 
 **RESTRICTIONS:**
-1. **NUMBERS ONLY:** You MUST replace all variables with actual numbers.
-   - ❌ BAD: `CALCULATE_MATH(rent * 12)`
-   - ✅ GOOD: `CALCULATE_MATH(20000 * 12)`
-2. **NO COMMENTS:** Do not add `#` or text inside the formula.
-3. **MISSING DATA:** If Basic Salary is unknown, use `0.50 * Total_Salary` directly in the math.
+1. **NUMBERS ONLY:** No words. No variable names.
+2. **NO LABELS:** Do not write "Salary:" or "HRA=". Just the math.
+   - ❌ BAD: `CALCULATE_MATH(Salary: 50000 * 12)`
+   - ✅ GOOD: `CALCULATE_MATH(50000 * 12)`
+3. **MISSING DATA:** Silently assume `Basic = 50%` if missing.
 
 **SINGLE TRUTH:**
 You MUST copy the result provided by Python exactly.

@@ -59,11 +59,6 @@ def safe_math_eval(expression):
         expression = expression.replace("`", "").replace("₹", "")       
         expression = expression.replace("%", "*0.01").replace("^", "**")     
         
-        open_c = expression.count('(')
-        close_c = expression.count(')')
-        if open_c > close_c: expression += ')' * (open_c - close_c)
-        elif close_c > open_c: expression = expression.rstrip(')')
-        
         expression = re.sub(r'(\d),(\d)', r'\1\2', expression)
         allowed = set("0123456789+-*/()., <>=abcdefhilmnorstuwx")
         if not set(expression).issubset(allowed): return "Error: Unsafe characters"
@@ -74,25 +69,34 @@ def safe_math_eval(expression):
         return str(result)
     except Exception as e: return f"Error ({e})"
 
+def calculate_hra_exemption(basic_annual, rent_annual, metro=True):
+    cond2 = rent_annual - (0.10 * basic_annual)
+    cond3 = (0.50 if metro else 0.40) * basic_annual
+    return int(max(0, min(cond2, cond3)))
+
 def calculate_tax_detailed(age, salary, business_income, rent_paid, inv_80c, med_80d, custom_basic=0):
-    """Full Tax Regime Calculator"""
     std_deduction_new = 75000; std_deduction_old = 50000
     
-    # 1. Basic Salary Logic (Bulletproof)
-    if custom_basic <= 0:
-        basic = salary * 0.50 # Default assumption
+    # 1. Basic Salary Logic
+    # If custom_basic is provided (e.g. user said "Basic is 4L"), use it.
+    # If custom_basic is 0 OR it seems too small to be annual (e.g. 40 means 40%), assume percentage.
+    basic = 0
+    if custom_basic > 0:
+        if custom_basic < 100: # User said "40%"
+             basic = salary * (custom_basic / 100.0)
+        else:
+             basic = custom_basic
     else:
-        basic = custom_basic
+        basic = salary * 0.50 # Default 50%
 
-    # 2. HRA Calculation Logic (Old Regime Only)
-    # Rule: Min of (Actual HRA Received, Rent - 10% Basic, 50% Basic)
-    # We assume 'Actual HRA' is sufficient to not be the limiting factor unless user specifies.
-    hra_condition_1 = rent_paid * 12 - (0.10 * basic)
-    hra_condition_2 = 0.50 * basic # Assuming Metro (worst case max benefit)
-    hra_exemption = max(0, min(hra_condition_1, hra_condition_2))
+    # 2. Rent Logic
+    final_rent = rent_paid
+    if rent_paid > 0 and rent_paid < (salary * 0.15):
+        final_rent = rent_paid * 12 # Assume Monthly
+
+    hra_exemption = calculate_hra_exemption(basic, final_rent)
     
-    # 3. Income Computation
-    taxable_business = business_income * 0.50 # Presumptive scheme assumption
+    taxable_business = business_income * 0.50
     gross = salary + taxable_business
     
     deductions_old = std_deduction_old + hra_exemption + min(inv_80c, 150000) + med_80d
@@ -104,14 +108,13 @@ def calculate_tax_detailed(age, salary, business_income, rent_paid, inv_80c, med
     
     return {
         "new": {"breakdown": bd_new, "net": net_new},
-        "old": {"breakdown": bd_old, "net": net_old, "deductions": {"std": std_deduction_old, "hra": int(hra_exemption), "80c": min(inv_80c, 150000), "80d": med_80d}}
+        "old": {"breakdown": bd_old, "net": net_old, "deductions": {"std": std_deduction_old, "hra": hra_exemption, "80c": min(inv_80c, 150000), "80d": med_80d}, "assumptions": {"basic": basic, "rent_annual": final_rent}}
     }
 
 def compute_tax_breakdown(income, age, regime):
     tax = 0
     if regime == "new":
         t = income
-        # New Regime Slabs (FY 25-26)
         if t > 2400000: tax += (t-2400000)*0.30; t=2400000
         if t > 2000000: tax += (t-2000000)*0.25; t=2000000
         if t > 1600000: tax += (t-1600000)*0.20; t=1600000
@@ -119,7 +122,6 @@ def compute_tax_breakdown(income, age, regime):
         if t > 800000:  tax += (t-800000)*0.10;  t=800000
         if t > 400000:  tax += (t-400000)*0.05
     else:
-        # Old Regime Slabs
         limit = 500000 if age >= 80 else (300000 if age >= 60 else 250000)
         t = income
         if t > 1000000: tax += (t-1000000)*0.30; t=1000000
@@ -134,36 +136,35 @@ def compute_tax_breakdown(income, age, regime):
         surcharge = tax * rate
     
     cess = (tax + surcharge) * 0.04
-    total = int(tax + surcharge + cess)
-    return {"base": int(tax), "surcharge": int(surcharge), "cess": int(cess), "total": total}
+    return {"base": int(tax), "surcharge": int(surcharge), "cess": int(cess), "total": int(tax + surcharge + cess)}
 
-# --- 5. THE DECISION BRAIN ---
+# --- 5. THE UNIFIED BRAIN ---
 
 sys_instruction_unified = """
 You are "TaxGuide AI".
 
-**DECISION PROTOCOL (Follow Priority Order):**
+**PRIME DIRECTIVE:**
+1. **Identify Data:** Look for "Salary", "Rent", "Investments" in user text.
+2. **Missing Salary?** -> ASK NICELY: "To start, could you tell me your Annual Salary?"
+3. **Have Salary?** -> **CALCULATE IMMEDIATELY**.
+   - **ASSUME** defaults (Age=30, Basic=50%, Rent=Monthly) if not specified.
+   - Use `CALCULATE(...)` tool.
 
-**PRIORITY 1: SPOT CHECKS (HRA, LTCG, Specifics)**
-- **Trigger:** User asks "What is my HRA?", "Calculate HRA", "Tax on 2L gain".
-- **Action:** Use `CALCULATE_MATH(...)`.
-- **Logic:**
-  - Formula for HRA: `min(Rent - 0.10*Basic, 0.50*Basic)`
-  - Assume Basic = 50% of Salary if missing.
-  - Assume Monthly Rent x 12 for Annual.
+**REFINEMENT PROTOCOL:**
+If the user corrects an assumption (e.g., "My Basic is actually 40%"):
+1. **RETAIN** the previous values for Salary/Rent.
+2. **UPDATE** only the corrected value (Basic).
+3. **RE-CALCULATE** immediately using the new set of parameters.
 
-**PRIORITY 2: FULL TAX REPORT**
-- **Trigger:** User asks "Calculate Tax", "Old vs New", or gives Salary + Rent context without a specific question.
-- **Action:** Use `CALCULATE(...)`.
-- **Input Logic:**
-  - Check user input for: Salary, Rent, Investments (80C), Med Insurance (80D).
-  - If Rent is mentioned (e.g. "Rent 20k"), SEND IT as `rent=20000`.
-  - **CRITICAL:** Do not send `rent=0` if the user mentioned rent.
+**TOOL SELECTION:**
+- **User asks "Calculate Tax" (with Salary)** -> `CALCULATE(...)`
+- **User asks "What is my HRA?" (Specific)** -> `CALCULATE_MATH(...)`
+- **User asks "Explain 80C"** -> LOAD(salary_rules.pdf)
 
 **OUTPUT FORMAT:**
-[Direct Answer / Summary]
+[Summary Answer]
 |||
-[Technical Details / Breakdown]
+[Technical Details with Assumptions Used]
 """
 
 # --- 6. UI SETUP ---
@@ -188,14 +189,14 @@ if not st.session_state.chat_started:
             st.session_state.chat_started = True
             model = genai.GenerativeModel('gemini-2.0-flash', system_instruction=sys_instruction_unified)
             st.session_state.chat_session = model.start_chat(history=[])
-            st.session_state.chat_session.history.append({"role": "model", "parts": ["Hi! Tell me your Salary and Rent, and I'll calculate your tax."]})
+            st.session_state.chat_session.history.append({"role": "model", "parts": ["Hi! To give you an accurate estimate, what is your Annual Salary?"]})
             st.rerun()
     with c2:
         if st.button("📚 Ask Tax Rules", use_container_width=True):
             st.session_state.chat_started = True
             model = genai.GenerativeModel('gemini-2.0-flash', system_instruction=sys_instruction_unified)
             st.session_state.chat_session = model.start_chat(history=[])
-            st.session_state.chat_session.history.append({"role": "model", "parts": ["Hi! I can explain specific rules (like HRA or LTCG). What's your question?"]})
+            st.session_state.chat_session.history.append({"role": "model", "parts": ["Hi! I can explain rules (HRA, Deductions, Capital Gains). What's your question?"]})
             st.rerun()
 
 # --- SCREEN 2: CHAT INTERFACE ---
@@ -205,7 +206,7 @@ else:
             if "|||" in text:
                 summary, details = text.split("|||", 1)
                 st.markdown(summary.strip())
-                with st.expander("📝 View Calculation Details"):
+                with st.expander("📝 View Details & Assumptions"):
                     st.markdown(details.strip())
             else:
                 st.markdown(text)
@@ -234,12 +235,12 @@ else:
                 response = send_message_with_retry(st.session_state.chat_session, prompt)
                 text = response.text
                 
-                # --- TOOL 1: MATH SPOT CHECK (Priority 1) ---
+                # --- TOOL 1: MATH SPOT CHECK ---
                 if "CALCULATE_MATH(" in text:
                     expr = text.split("CALCULATE_MATH(")[1][:-1]
                     res = safe_math_eval(expr)
                     st.toast(f"🧮 Computed: {res}", icon="✅")
-                    send_message_with_retry(st.session_state.chat_session, f"Math Result: {res}. State this exact number to the user.")
+                    send_message_with_retry(st.session_state.chat_session, f"Math Result: {res}. State this exact number.")
                     text = st.session_state.chat_session.history[-1].parts[0].text
 
                 # --- TOOL 2: LOAD KNOWLEDGE ---
@@ -258,7 +259,7 @@ else:
                             send_message_with_retry(st.session_state.chat_session, "Context loaded. Proceed.")
                             text = st.session_state.chat_session.history[-1].parts[0].text
 
-                # --- TOOL 3: FULL CALCULATOR (Priority 2) ---
+                # --- TOOL 3: FULL CALCULATOR ---
                 if "CALCULATE(" in text:
                     params = text.split("CALCULATE(")[1].split(")")[0]
                     d = {"age":30, "salary":0, "business":0, "rent":0, "inv80c":0, "med80d":0, "basic":0}
@@ -268,21 +269,17 @@ else:
                             vc = ''.join(filter(str.isdigit, v))
                             if vc: d[k.strip()] = int(vc)
                     
-                    # Force Monthly to Annual for Rent if needed (Simple heuristic: if rent < 100k, likely monthly)
-                    if d['rent'] > 0 and d['rent'] < 100000:
-                         d['rent'] = d['rent'] # Keep it monthly for HRA Calc which expects monthly? 
-                         # Wait, calculate_tax_detailed expects ANNUAL inputs for salary but Rent?
-                         # Let's standardize: Python function expects ANNUAL rent.
-                         # AI usually sends what it hears.
-                         # FIX: If rent is small relative to salary, multiply by 12
-                         if d['rent'] < (d['salary'] * 0.10): d['rent'] = d['rent'] * 12
-
+                    # RUN CALCULATION
                     res = calculate_tax_detailed(d['age'], d['salary'], d['business'], d['rent'], d['inv80c'], d['med80d'], d['basic'])
                     tn, to = res['new']['breakdown']['total'], res['old']['breakdown']['total']
                     winner, savings = ("New", to-tn) if tn < to else ("Old", tn-to)
                     
+                    # Retrieve Assumptions used by Python
+                    used_basic = res['old']['assumptions']['basic']
+                    used_rent = res['old']['assumptions']['rent_annual']
+                    
                     report = f"""
-                    ### 🧾 Tax Report
+                    ### 🧾 Tax Estimate
                     **Recommendation:** **{winner} Regime** is better. (Save ₹{savings:,})
                     
                     | | **New Regime** | **Old Regime** |
@@ -291,14 +288,14 @@ else:
                     | **Total Tax** | **₹{tn:,}** | **₹{to:,}** |
                     
                     ||| 
-                    **Detailed Breakdown:**
-                    * **Gross Income:** ₹{d['salary']:,}
-                    * **HRA Exemption (Old):** ₹{res['old']['deductions']['hra']:,} 
-                    * **Rent Considered (Annual):** ₹{d['rent']:,}
+                    **Defaults & Assumptions Used:**
+                    * **Basic Salary:** ₹{used_basic:,}
+                    * **HRA Exemption:** ₹{res['old']['deductions']['hra']:,} 
+                    * **Annual Rent Considered:** ₹{used_rent:,}
                     * **Standard Deduction:** ₹75k (New) / ₹50k (Old)
                     """
                     st.chat_message("assistant", avatar="🤖").markdown(report.split("|||")[0])
-                    with st.expander("📝 View Details"): st.markdown(report.split("|||")[1])
+                    with st.expander("📝 View Details & Assumptions"): st.markdown(report.split("|||")[1])
                     
                     st.session_state.chat_session.history.append({"role": "model", "parts": [f"Result shown: New={tn}, Old={to}"]})
 

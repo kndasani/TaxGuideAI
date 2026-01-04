@@ -47,15 +47,12 @@ def inject_knowledge(persona_type):
     return None
 
 # --- 4. CALCULATOR ENGINE ---
-
-# Core 1: The Robust Math Engine
 def safe_math_eval(expression):
     try:
         expression = expression.replace(",", "").replace("%", "*0.01").replace("^", "**")
         allowed_chars = set("0123456789+-*/(). abdimnorsux")
         if not set(expression).issubset(allowed_chars):
             return "Error: Unsafe characters."
-        
         safe_dict = {"min": min, "max": max, "abs": abs, "round": round}
         result = eval(expression, {"__builtins__": None}, safe_dict)
         if isinstance(result, (int, float)):
@@ -64,7 +61,6 @@ def safe_math_eval(expression):
     except Exception as e:
         return f"Error: {e}"
 
-# Core 2: The Full Regime Calculator
 def calculate_tax_detailed(age, salary, business_income, rent_paid, inv_80c, med_80d, custom_basic=0):
     std_deduction_new = 75000; std_deduction_old = 50000
     basic = custom_basic if custom_basic > 0 else (salary * 0.50)
@@ -114,38 +110,37 @@ def compute_tax_breakdown(income, age, regime):
     total = int(tax + surcharge + cess)
     return {"base": int(tax), "surcharge": int(surcharge), "cess": int(cess), "total": total}
 
-# --- 5. THE TWO BRAINS (Aggressive Update) ---
+# --- 5. THE TWO BRAINS ---
 
-# Brain A: Calculator (Aggressive Estimator)
+# Brain A: Calculator (Fast)
 sys_instruction_calc = """
 You are "TaxGuide AI". 
-**Goal:** Provide a Tax Estimate IMMEDIATELY.
+**Goal:** Estimate Tax IMMEDIATELY.
 
-**HYPER-AGGRESSIVE RULE:**
-If the user provides an Income amount (e.g., "15L", "20 lakhs"):
-1. **DO NOT ASK QUESTIONS.**
-2. Assume: Age=30, Rent=0, Deductions=0, Basic=50%.
-3. Output `CALCULATE(...)` immediately with these defaults.
-4. ONLY after showing the result, say: "This assumes 0 deductions. Want to add Rent or 80C?"
-
-**LOGIC FLOW:**
-1. User says "Tax on 15L" -> YOU Output `CALCULATE(salary=1500000, age=30, rent=0, ...)`
-2. User says "I pay 20k rent" -> YOU Output `CALCULATE(salary=1500000, age=30, rent=240000, ...)`
+**RULE:** If User gives Income (e.g. "Tax on 15L"):
+1. Assume Age=30, Rent=0, Deductions=0, Basic=50%.
+2. Output `CALCULATE(...)` instantly.
+3. Post-calculation, ask if they want to refine.
 """
 
-# Brain B: The Professor (Single Truth)
+# Brain B: The Professor (GAGGED from asking Basic Salary)
 sys_instruction_rules = """
 You are "TaxGuide AI".
-**Goal:** Answer user questions.
+**Goal:** Answer user questions accurately using Python.
 
-**CRITICAL RULE - SINGLE TRUTH:**
-When using `CALCULATE_MATH`, you will receive a result from Python.
-You MUST copy that result EXACTLY into the [Main Answer].
+**CRITICAL RULE - MISSING DATA:**
+If you know Total Salary/Rent but NOT Basic Salary:
+1. **DO NOT ASK FOR IT.**
+2. Silently assume `Basic = 50% of Total Salary`.
+3. Proceed to calculation immediately.
+
+**CRITICAL RULE - MONTHLY vs ANNUAL:**
+If user gives Monthly figures (e.g. "1 Lakh PM"), CONVERT to Annual (12 Lakhs) inside the formula.
+Example: User says "Rent 20k, Salary 1L PM".
+Formula: `min(240000 - 0.10*(1200000*0.50), 0.50*(1200000*0.50))`
 
 **OUTPUT FORMAT:**
-[Main Answer: Definition + Context + Key Numbers]
-|||
-[Technical Details: Formulas, Section Numbers, Deep Dive]
+[Main Answer] ||| [Technical Details]
 
 **LOGIC:**
 1. DETECT CONTEXT -> LOAD
@@ -220,7 +215,6 @@ else:
                 response = send_message_with_retry(st.session_state.chat_session, prompt)
                 text = response.text
                 
-                # --- TOOL: MATH ---
                 if "CALCULATE_MATH(" in text:
                     try:
                         expression = text.split("CALCULATE_MATH(")[1][:-1]
@@ -231,7 +225,6 @@ else:
                         text = response.text
                     except Exception as e: st.error(f"Math Tool Error: {e}")
 
-                # --- TOOL: HANDOVER ---
                 if "SWITCH_TO_CALC" in text:
                     st.session_state.mode = "CALC"
                     current_hist = st.session_state.chat_session.history[:-1]
@@ -242,7 +235,6 @@ else:
                     response = send_message_with_retry(st.session_state.chat_session, "User wants to calculate. Acknowledge and start Interview.")
                     text = response.text
 
-                # --- TOOL: LOAD PDF ---
                 if "LOAD(" in text:
                     persona = text.split("LOAD(")[1].split(")")[0]
                     if st.session_state.loaded_persona != persona:
@@ -261,7 +253,6 @@ else:
                             response = send_message_with_retry(st.session_state.chat_session, next_msg)
                             text = response.text
 
-                # --- TOOL: FULL CALCULATOR ---
                 if "CALCULATE(" in text:
                     try:
                         params = text.split("CALCULATE(")[1].split(")")[0]

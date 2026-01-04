@@ -48,26 +48,16 @@ def inject_knowledge(persona_type):
 
 # --- 4. CALCULATOR ENGINE ---
 
-# Core 1: The Robust Math Engine (Fixed)
+# Core 1: The Robust Math Engine
 def safe_math_eval(expression):
     try:
-        # 1. Clean up common LLM formatting issues
-        expression = expression.replace(",", "")       # Remove commas: "1,00,000" -> "100000"
-        expression = expression.replace("%", "*0.01")  # Fix percents: "10%" -> "10*0.01"
-        expression = expression.replace("^", "**")     # Fix power: "10^2" -> "10**2"
-        
-        # 2. Whitelist characters
-        # digits, operators, brackets, dot, space
-        # letters needed for: min, max, abs, round
-        # Unique letters: a, b, d, i, m, n, o, r, s, u, x
+        expression = expression.replace(",", "").replace("%", "*0.01").replace("^", "**")
         allowed_chars = set("0123456789+-*/(). abdimnorsux")
-        
         if not set(expression).issubset(allowed_chars):
-            return "Error: Unsafe characters in formula."
+            return "Error: Unsafe characters."
         
         safe_dict = {"min": min, "max": max, "abs": abs, "round": round}
         result = eval(expression, {"__builtins__": None}, safe_dict)
-        
         if isinstance(result, (int, float)):
             return f"{int(result):,}"
         return str(result)
@@ -145,17 +135,20 @@ If User gives ONLY Income (e.g., "Tax on 15L"):
 3. INTERVIEW -> CALCULATE.
 """
 
-# Brain B: The Professor
+# Brain B: The Professor (Locked Consistency)
 sys_instruction_rules = """
 You are "TaxGuide AI".
 **Goal:** Answer user questions comprehensively.
 
-**CRITICAL RULE - MATH TOOL:**
-Use `CALCULATE_MATH(expression)` for all spot checks.
-- If inputs are partial, **ASSUME** standard values (e.g., Basic=50%) to give an answer. State the assumption.
+**CRITICAL RULE - SINGLE TRUTH:**
+When using `CALCULATE_MATH`, you will receive a result from Python.
+You MUST copy that result EXACTLY into the [Main Answer].
+Do not re-calculate or round it yourself.
 
 **OUTPUT FORMAT:**
-[Main Answer] ||| [Technical Details]
+[Main Answer: Definition + Context + Key Numbers]
+|||
+[Technical Details: Formulas, Section Numbers, Deep Dive]
 
 **LOGIC:**
 1. DETECT CONTEXT -> LOAD
@@ -230,15 +223,18 @@ else:
                 response = send_message_with_retry(st.session_state.chat_session, prompt)
                 text = response.text
                 
-                # --- TOOL: MATH (Robust) ---
+                # --- TOOL: MATH ---
                 if "CALCULATE_MATH(" in text:
                     try:
                         expression = text.split("CALCULATE_MATH(")[1][:-1]
                         result = safe_math_eval(expression)
                         st.toast(f"🧮 Computed: {result}", icon="✅")
-                        response = send_message_with_retry(st.session_state.chat_session, 
-                            f"The calculated result is {result}. Use this exact number in your answer.")
+                        
+                        # FORCE CONSISTENCY: Python instructs the AI what to write
+                        instruction = f"The result is {result}. You MUST state: 'The calculated amount is ₹{result}.' in the Main Answer section."
+                        response = send_message_with_retry(st.session_state.chat_session, instruction)
                         text = response.text
+                        
                     except Exception as e: st.error(f"Math Tool Error: {e}")
 
                 # --- TOOL: HANDOVER ---

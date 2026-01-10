@@ -5,6 +5,7 @@ import time
 import math
 import re
 from dotenv import load_dotenv
+from duckduckgo_search import DDGS
 
 # --- 1. CONFIGURATION ---
 st.set_page_config(page_title="TaxGuide AI", page_icon="🇮🇳", layout="centered", initial_sidebar_state="collapsed")
@@ -30,7 +31,7 @@ def send_message_with_retry(chat_session, prompt, retries=3):
                 raise e
     raise Exception("⚠️ Server busy. Please wait 1 minute.")
 
-# --- 3. KNOWLEDGE LOADER ---
+# --- 3. KNOWLEDGE LOADER & SEARCH ENGINE ---
 @st.cache_resource
 def get_pdf_file(filename):
     if os.path.exists(filename):
@@ -46,6 +47,24 @@ def inject_knowledge(persona_type):
     elif persona_type == "BUSINESS": return get_pdf_file("freelancer_rules.pdf")
     elif persona_type == "CAPITAL_GAINS": return get_pdf_file("capital_gains.pdf")
     return None
+
+def search_indian_tax_rules(query):
+    """
+    Performs a live web search restricted to Indian Income Tax context.
+    """
+    try:
+        # Force "India" context to prevent US/Global answers
+        safe_query = f"{query} India Income Tax Act rules latest"
+        results = DDGS().text(safe_query, max_results=3)
+        if not results:
+            return "No specific Indian tax ruling found online."
+        
+        summary = "Search Results:\n"
+        for res in results:
+            summary += f"- {res['title']}: {res['body']} (Source: {res['href']})\n"
+        return summary
+    except Exception as e:
+        return f"Search Error: {str(e)}"
 
 # --- 4. CALCULATOR ENGINES ---
 
@@ -95,22 +114,15 @@ def calculate_tax_detailed(age, salary, business_income, rent_paid, hra_received
     
     limit_80tta = 50000 if age >= 60 else 10000
     deduction_80tta = min(savings_int, limit_80tta)
-    deduction_80e = edu_loan
-    deduction_80g = donations
-    deduction_home_loan = min(home_loan, 200000)
-    deduction_nps = min(nps, 50000)
-
-    taxable_business = business_income * 0.50
-    gross = salary + taxable_business
     
     deductions_old = (
         std_deduction_old + hra_exemption + min(inv_80c, 150000) + med_80d + 
-        deduction_home_loan + deduction_nps + deduction_80e + 
-        deduction_80g + deduction_80tta + other_deductions
+        min(home_loan, 200000) + min(nps, 50000) + edu_loan + 
+        donations + deduction_80tta + other_deductions
     )
     
-    net_old = max(0, gross - deductions_old)
-    net_new = max(0, gross - std_deduction_new)
+    net_old = max(0, (salary + business_income * 0.5) - deductions_old)
+    net_new = max(0, (salary + business_income * 0.5) - std_deduction_new)
 
     bd_new = compute_tax_breakdown(net_new, age, "new")
     bd_old = compute_tax_breakdown(net_old, age, "old")
@@ -121,22 +133,11 @@ def calculate_tax_detailed(age, salary, business_income, rent_paid, hra_received
             "breakdown": bd_old, 
             "net": net_old, 
             "deductions": {
-                "std": std_deduction_old, 
-                "hra": hra_exemption, 
-                "80c": min(inv_80c, 150000), 
-                "med80d": med_80d,
-                "home_loan": deduction_home_loan,
-                "nps": deduction_nps,
-                "80e": deduction_80e,
-                "80g": deduction_80g,
-                "80tta": deduction_80tta,
-                "other": other_deductions
+                "std": std_deduction_old, "hra": hra_exemption, "80c": min(inv_80c, 150000), 
+                "med80d": med_80d, "home_loan": min(home_loan, 200000), "nps": min(nps, 50000),
+                "80e": edu_loan, "80g": donations, "80tta": deduction_80tta, "other": other_deductions
             }, 
-            "assumptions": {
-                "basic": basic, 
-                "rent_annual": final_rent,
-                "hra_received": final_hra_received
-            }
+            "assumptions": {"basic": basic, "rent_annual": final_rent, "hra_received": final_hra_received}
         }
     }
 
@@ -167,31 +168,35 @@ def compute_tax_breakdown(income, age, regime):
     cess = (tax + surcharge) * 0.04
     return {"base": int(tax), "surcharge": int(surcharge), "cess": int(cess), "total": int(tax + surcharge + cess)}
 
-# --- 5. THE UNIFIED BRAIN ---
+# --- 5. THE UNIFIED BRAIN (MERGED PROMPT) ---
 
 sys_instruction_unified = """
-You are "TaxGuide AI".
+You are "TaxGuide AI", an expert strictly in **Indian Income Tax (Act 1961)**.
 
-**PRIME DIRECTIVE:**
-If the user provides a Salary amount, you **MUST** output the `CALCULATE(...)` tool command IMMEDIATELY.
+**MODE 1: THE HELPFUL CALCULATOR**
+1. **Trigger:** If user gives Salary (e.g., "15L"), output `CALCULATE(...)` IMMEDIATELY.
+2. **Post-Calc Action:** After the tool runs, you will receive "CALCULATION_DONE".
+3. **The Audit:** Analyze the inputs. If defaults (zeros) were used for `rent`, `inv80c` (PF/PPF), or `home_loan`, politely suggest them.
+   - *Example:* "I noticed you haven't included 80C investments. You can save tax on up to ₹1.5L. Do you have PF or LIC?"
+   - *Tone:* Helpful consultant, not aggressive interrogator.
 
-**OPTIMIZATION PROTOCOL (THE "HELPFUL GUIDE"):**
-After the calculation is done, you will receive a prompt saying "CALCULATION_DONE".
-You MUST then analyze the defaults used (which will be 0) and gently suggest improvements.
-- **Tone:** Helpful, optional, not demanding. Use phrases like "If you have..." or "You could save more by..."
-- **Rent:** "I calculated HRA as 0. Do you pay rent?"
-- **80C:** "I haven't included 80C investments (PF/PPF). You have a limit of ₹1.5L available."
-- **Home Loan:** "Do you have a home loan? Interest is deductible."
+**MODE 2: THE KNOWLEDGE EXPERT**
+1. **Trigger:** If user asks a rule question (e.g., "Is tuition taxable?").
+2. **Hierarchy of Truth:**
+   - **First:** Check loaded PDF context (via `LOAD`).
+   - **Second:** If PDF is silent, use `SEARCH_WEB(...)`.
+3. **Strict Constraints:**
+   - **MANDATORY:** Append "India Income Tax" to all search queries.
+   - **BLOCK:** NEVER use US/UK tax laws (e.g., 401k, IRS).
+   - **CITATION:** Always cite the Source (PDF Name or URL).
 
-**Present these options clearly so the user can just type a number to update.**
-
-**DATA PARSING:**
-- "HRA is 20k" -> `hra_received=20000`
-- "Rent is 20k" -> `rent=20000`
-- "PF is 50k" -> `inv80c=50000`
+**TOOLS:**
+- `CALCULATE(...)`: For tax computation.
+- `SEARCH_WEB(query)`: Search Google/DDG for Indian rules.
+- `LOAD(...)`: Load PDF knowledge.
 
 **OUTPUT FORMAT:**
-CALCULATE(salary=..., rent=..., ...)
+[Direct Answer / Action]
 """
 
 # --- 6. UI SETUP ---
@@ -207,7 +212,6 @@ with col2:
         st.session_state.clear()
         st.rerun()
 
-# --- SCREEN 1: LANDING PAGE ---
 if not st.session_state.chat_started:
     st.markdown("#### 👋 How can I help you today?")
     c1, c2 = st.columns(2)
@@ -223,32 +227,28 @@ if not st.session_state.chat_started:
             st.session_state.chat_started = True
             model = genai.GenerativeModel('gemini-2.0-flash', system_instruction=sys_instruction_unified)
             st.session_state.chat_session = model.start_chat(history=[])
-            st.session_state.chat_session.history.append({"role": "model", "parts": ["Hi! I can explain rules (HRA, Deductions, Capital Gains). What's your question?"]})
+            st.session_state.chat_session.history.append({"role": "model", "parts": ["Hi! I can explain Indian Tax Rules. What's your question?"]})
             st.rerun()
 
-# --- SCREEN 2: CHAT INTERFACE ---
 else:
     def render_message(text, role, avatar):
         with st.chat_message(role, avatar=avatar):
             st.markdown(text)
 
-    # History Display
     for msg in st.session_state.chat_session.history:
         text = ""
-        role_label = ""
         if isinstance(msg, dict):
+            parts = msg.get("parts", []); text = parts[0] if parts else ""
             role_label = msg.get("role")
-            parts = msg.get("parts", [])
-            if parts: text = parts[0]
         else:
+            text = msg.parts[0].text if msg.parts else ""
             role_label = msg.role
-            if msg.parts: text = msg.parts[0].text
         
         role_icon = "👤" if role_label == "user" else "🤖"
-        if text and not any(x in text for x in ["CALCULATE(", "CALCULATE_MATH(", "LOAD(", "Result:", "CALCULATION_DONE"]):
+        if text and not any(x in text for x in ["CALCULATE(", "CALCULATE_MATH(", "LOAD(", "SEARCH_WEB(", "Result:", "CALCULATION_DONE"]):
             render_message(text, role_label, role_icon)
 
-    if prompt := st.chat_input("Ex: Salary 15L..."):
+    if prompt := st.chat_input("Ex: Salary 15L... or Is tuition reimbursement taxable?"):
         st.chat_message("user", avatar="👤").markdown(prompt)
         
         with st.spinner("Processing..."):
@@ -256,16 +256,25 @@ else:
                 response = send_message_with_retry(st.session_state.chat_session, prompt)
                 text = response.text
                 
-                # --- TOOL 1: MATH SPOT CHECK ---
-                if "CALCULATE_MATH(" in text:
+                # --- TOOL 1: WEB SEARCH ---
+                if "SEARCH_WEB(" in text:
+                    query = text.split("SEARCH_WEB(")[1][:-1]
+                    st.toast(f"🌐 Searching Indian Rules: {query}", icon="🔍")
+                    search_result = search_indian_tax_rules(query)
+                    final_res = send_message_with_retry(st.session_state.chat_session, f"Search Result: {search_result}. Summarize strictly for India and cite source.")
+                    render_message(final_res.text, "assistant", "🤖")
+
+                # --- TOOL 2: MATH SPOT CHECK ---
+                elif "CALCULATE_MATH(" in text:
                     expr = text.split("CALCULATE_MATH(")[1][:-1]
                     res = safe_math_eval(expr)
                     st.toast(f"🧮 Computed: {res}", icon="✅")
                     send_message_with_retry(st.session_state.chat_session, f"Math Result: {res}. State this exact number.")
                     text = st.session_state.chat_session.history[-1].parts[0].text
+                    render_message(text, "assistant", "🤖")
 
-                # --- TOOL 2: LOAD KNOWLEDGE ---
-                if "LOAD(" in text:
+                # --- TOOL 3: LOAD KNOWLEDGE ---
+                elif "LOAD(" in text:
                     persona = text.split("LOAD(")[1].split(")")[0]
                     if st.session_state.loaded_persona != persona:
                         f = inject_knowledge(persona)
@@ -277,11 +286,19 @@ else:
                             st.session_state.chat_session = model.start_chat(history=hist)
                             st.session_state.loaded_persona = persona
                             st.toast(f"📚 Loaded: {persona}", icon="✅")
-                            send_message_with_retry(st.session_state.chat_session, "Context loaded. Proceed.")
-                            text = st.session_state.chat_session.history[-1].parts[0].text
+                            final_res = send_message_with_retry(st.session_state.chat_session, "Context loaded. Answer based on this PDF.")
+                            render_message(final_res.text, "assistant", "🤖")
+                        else:
+                            st.toast("⚠️ PDF not found. Checking Web...", icon="🌐")
+                            fallback_res = send_message_with_retry(st.session_state.chat_session, f"PDF missing. Use SEARCH_WEB for '{prompt}' instead.")
+                            if "SEARCH_WEB(" in fallback_res.text:
+                                query = fallback_res.text.split("SEARCH_WEB(")[1][:-1]
+                                res = search_indian_tax_rules(query)
+                                final = send_message_with_retry(st.session_state.chat_session, f"Search Result: {res}")
+                                render_message(final.text, "assistant", "🤖")
 
-                # --- TOOL 3: FULL CALCULATOR (WITH NATIVE UI) ---
-                if "CALCULATE(" in text:
+                # --- TOOL 4: FULL CALCULATOR ---
+                elif "CALCULATE(" in text:
                     params = text.split("CALCULATE(")[1].split(")")[0]
                     d = {"age":30, "salary":0, "business":0, "rent":0, "hra_received":0, "inv80c":0, "med80d":0, "basic":0, "home_loan":0, "nps":0, "edu_loan":0, "donations":0, "savings_int":0, "other":0}
                     for p in params.split(","):
@@ -319,14 +336,16 @@ else:
                             "Old Regime": [f"₹{d['salary']:,}", f"₹{res['old']['deductions']['hra']:,}", "₹50,000", f"₹{res['old']['deductions']['80c']:,}", f"₹{res['old']['deductions']['nps']:,}", f"₹{res['old']['deductions']['home_loan']:,}", f"₹{res['old']['deductions']['med80d']:,}", f"₹{other_total:,}", f"₹{res['old']['net']:,}", f"₹{to:,}"]
                         }
                         st.table(table_data)
-                    
+                        
+                        st.caption(f"*Calculated based on Basic: ₹{res['old']['assumptions']['basic']:,} & HRA Received: ₹{res['old']['assumptions']['hra_received']:,}*")
+
                     st.session_state.chat_session.history.append({"role": "model", "parts": [f"Result shown: New={tn}, Old={to}"]})
 
-                    # --- TRIGGER "HELPFUL" NUDGE ---
+                    # --- THE "HELPFUL" NUDGE TRIGGER ---
                     audit_response = send_message_with_retry(st.session_state.chat_session, "CALCULATION_DONE. Suggest optimizations (Rent, 80C, Home Loan) politely if missing, but do not force.")
                     render_message(audit_response.text, "assistant", "🤖")
 
-                if not any(x in text for x in ["CALCULATE(", "CALCULATE_MATH(", "LOAD(", "Result:"]):
+                else:
                     render_message(text, "assistant", "🤖")
 
             except Exception as e: st.error(f"Error: {e}")

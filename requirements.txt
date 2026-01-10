@@ -2,3 +2,4 @@ streamlit
 google-generativeai
 numpy
 python-dotenv
+duckduckgo-search

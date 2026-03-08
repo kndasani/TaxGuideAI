@@ -1,8 +1,12 @@
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
+
 import google.generativeai as genai
 import os
 import time
 from dotenv import load_dotenv
-from app import sys_instruction_unified
+from taxguideai.app import sys_instruction_unified
 
 # --- SETUP ---
 load_dotenv()
@@ -69,33 +73,40 @@ tests = [
 ]
 
 # --- RUNNER ---
-print(f"\n🚀 Running {len(tests)} Tests for TaxGuide AI...\n")
-score = 0
+def test_comprehensive_suite():
+    """Run all comprehensive tests for TaxGuide AI"""
+    print(f"\n🚀 Running {len(tests)} Tests for TaxGuide AI...\n")
+    score = 0
 
-for t in tests:
-    print(f"Test: {t['name']}...", end=" ", flush=True)
-    response = get_bot_response(t['input'])
+    for t in tests:
+        print(f"Test: {t['name']}...", end=" ", flush=True)
+        response = get_bot_response(t['input'])
+        
+        if response.startswith("ERROR"):
+            print("❌ CRASH")
+            continue
+
+        result = "FAIL"
+        if t['type'] == "logic":
+            # Run the lambda function
+            if t['check'](response): result = "PASS"
+        else:
+            # Ask the LLM Judge
+            result = llm_judge(t['input'], response, t['criteria'])
+        
+        if result == "PASS":
+            print("✅ PASS")
+            score += 1
+        else:
+            print(f"❌ FAIL")
+            print(f"   Input: {t['input']}")
+            print(f"   Output: {response[:100]}...")
+
+    print(f"\n🏁 Final Score: {score}/{len(tests)}")
+    if score == len(tests): print("🌟 ALL SYSTEMS GO!")
+    else: print("⚠️  Some tests failed.")
     
-    if response.startswith("ERROR"):
-        print("❌ CRASH")
-        continue
+    return score == len(tests)
 
-    result = "FAIL"
-    if t['type'] == "logic":
-        # Run the lambda function
-        if t['check'](response): result = "PASS"
-    else:
-        # Ask the LLM Judge
-        result = llm_judge(t['input'], response, t['criteria'])
-    
-    if result == "PASS":
-        print("✅ PASS")
-        score += 1
-    else:
-        print(f"❌ FAIL")
-        print(f"   Input: {t['input']}")
-        print(f"   Output: {response[:100]}...")
-
-print(f"\n🏁 Final Score: {score}/{len(tests)}")
-if score == len(tests): print("🌟 ALL SYSTEMS GO!")
-else: print("⚠️  Some tests failed.")
+if __name__ == "__main__":
+    test_comprehensive_suite()
